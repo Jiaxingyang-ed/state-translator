@@ -16,6 +16,7 @@ type Step2DecisionProps = {
   initialRouteData?: GeneratedRouteData | null;
   paidOptionId?: OptionId | null;
   unlockedTimeline?: TimelineStep[] | null;
+  forceUnlockAll?: boolean;
 };
 
 type GenerateOptionsApiResponse =
@@ -36,12 +37,31 @@ type CreateCheckoutSessionResponse =
       error: string;
     };
 
+type CreateSubscriptionCheckoutResponse =
+  | {
+      sessionUrl: string | null;
+    }
+  | {
+      error: string;
+    };
+
+type UserStatusResponse =
+  | {
+      isMember: boolean;
+      subscriptionStatus: string;
+      expiresAt: string | null;
+    }
+  | {
+      error: string;
+    };
+
 export default function Step2Decision({
   userInput,
   constraints,
   initialRouteData,
   paidOptionId,
   unlockedTimeline,
+  forceUnlockAll = false,
 }: Step2DecisionProps) {
   const [data, setData] = useState<GeneratedRouteData | null>(
     initialRouteData ?? null,
@@ -51,8 +71,36 @@ export default function Step2Decision({
   const [expanded, setExpanded] = useState<OptionId | null>(paidOptionId ?? null);
   const [unlocked, setUnlocked] = useState<Record<string, boolean>>({});
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackOptionId, setFeedbackOptionId] = useState<OptionId | null>(
+    null,
+  );
+  const [isMember, setIsMember] = useState(false);
   const [socialMode, setSocialMode] = useState<"独自" | "可约人">("独自");
   const [energyMode, setEnergyMode] = useState<"低能量" | "正常">("低能量");
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      const fetchUserStatus = async () => {
+        try {
+          const anonymousId = getOrCreateAnonymousId();
+          const response = await fetch(
+            `/api/user-status?anonymous_id=${encodeURIComponent(anonymousId)}`,
+          );
+          const result = (await response.json()) as UserStatusResponse;
+
+          if (!response.ok || "error" in result) {
+            return;
+          }
+
+          setIsMember(result.isMember);
+        } catch (caughtError) {
+          console.error("user status error:", caughtError);
+        }
+      };
+
+      void fetchUserStatus();
+    });
+  }, []);
 
   const generateOptions = useCallback(async () => {
     setIsLoading(true);
@@ -165,6 +213,108 @@ export default function Step2Decision({
     }
   };
 
+  const handleSaveTrip = async (optionId: OptionId) => {
+    try {
+      if (!data?.routeId) {
+        throw new Error("路线尚未保存，请刷新后重试");
+      }
+
+      const anonymousId = getOrCreateAnonymousId();
+      const response = await fetch("/api/save-trip", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-anonymous-id": anonymousId,
+        },
+        body: JSON.stringify({
+          routeId: data.routeId,
+          optionId,
+          anonymousId,
+        }),
+      });
+      const result = (await response.json()) as
+        | { success: true }
+        | { error: string };
+
+      if (!response.ok || "error" in result) {
+        throw new Error(
+          "error" in result ? result.error : "保存失败，请稍后重试",
+        );
+      }
+
+      alert("已保存到我的行程。");
+    } catch (caughtError) {
+      console.error("save trip error:", caughtError);
+      alert(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "保存失败，请稍后重试",
+      );
+    }
+  };
+
+  const handleSubscribe = async () => {
+    try {
+      const anonymousId = getOrCreateAnonymousId();
+      const response = await fetch("/api/create-subscription-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ anonymousId }),
+      });
+      const result =
+        (await response.json()) as CreateSubscriptionCheckoutResponse;
+
+      if (!response.ok || "error" in result) {
+        throw new Error(
+          "error" in result ? result.error : "会员支付初始化失败，请重试",
+        );
+      }
+
+      if (!result.sessionUrl) {
+        throw new Error("会员支付链接创建失败，请稍后重试");
+      }
+
+      window.location.assign(result.sessionUrl);
+    } catch (caughtError) {
+      console.error("subscription checkout error:", caughtError);
+      alert(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "会员支付初始化失败，请稍后重试",
+      );
+    }
+  };
+
+  const handleFeedbackSubmit = async (rating: string, comment: string) => {
+    if (!data?.routeId || !feedbackOptionId) {
+      throw new Error("缺少路线或选项信息");
+    }
+
+    const anonymousId = getOrCreateAnonymousId();
+    const response = await fetch("/api/feedback", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        routeId: data.routeId,
+        optionId: feedbackOptionId,
+        rating,
+        comment,
+        anonymousId,
+      }),
+    });
+    const result = (await response.json()) as
+      | { success: true }
+      | { error: string };
+
+    if (!response.ok || "error" in result) {
+      throw new Error("error" in result ? result.error : "提交失败，请稍后重试");
+    }
+  };
+
   if (isLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[linear-gradient(135deg,#fbfaf7_0%,#edf5f1_45%,#f8eee5_100%)] px-5">
@@ -241,8 +391,10 @@ export default function Step2Decision({
 
         <div className="grid gap-5 lg:grid-cols-2">
           {data.options.map((option) => {
-            const isExpanded = expanded === option.id;
+            const isMemberUnlocked = forceUnlockAll || isMember;
+            const isExpanded = isMemberUnlocked || expanded === option.id;
             const isUnlocked =
+              isMemberUnlocked ||
               unlocked[option.id] ||
               paidOptionId === option.id ||
               data.unlockedOptionIds.includes(option.id);
@@ -276,17 +428,19 @@ export default function Step2Decision({
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpanded((current) =>
-                      current === option.id ? null : option.id,
-                    )
-                  }
-                  className="mt-6 w-full rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
-                >
-                  免费试第一步
-                </button>
+                {!isMemberUnlocked ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpanded((current) =>
+                        current === option.id ? null : option.id,
+                      )
+                    }
+                    className="mt-6 w-full rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
+                  >
+                    免费试第一步
+                  </button>
+                ) : null}
 
                 <AnimatePresence initial={false}>
                   {isExpanded ? (
@@ -313,14 +467,17 @@ export default function Step2Decision({
                             <div className="flex flex-col gap-3 pt-2 sm:flex-row">
                               <button
                                 type="button"
-                                onClick={() => alert("已保存到我的行程。")}
+                                onClick={() => void handleSaveTrip(option.id)}
                                 className="flex-1 rounded-lg border border-[#2e4d48] px-4 py-3 text-sm font-medium text-[#2e4d48] transition hover:bg-[#e2eee9]"
                               >
                                 保存到我的行程
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setFeedbackOpen(true)}
+                                onClick={() => {
+                                  setFeedbackOptionId(option.id);
+                                  setFeedbackOpen(true);
+                                }}
                                 className="flex-1 rounded-lg bg-[#9b6b55] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#805743]"
                               >
                                 我完成了
@@ -333,6 +490,7 @@ export default function Step2Decision({
                             <LockedPreview
                               followingSteps={option.followingSteps}
                               onUnlock={() => void handlePay(option)}
+                              onSubscribe={() => void handleSubscribe()}
                             />
                           </>
                         )}
@@ -346,7 +504,11 @@ export default function Step2Decision({
         </div>
       </div>
 
-      <FeedbackModal open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      <FeedbackModal
+        open={feedbackOpen}
+        onClose={() => setFeedbackOpen(false)}
+        onSubmit={handleFeedbackSubmit}
+      />
     </main>
   );
 }
@@ -399,9 +561,11 @@ function TimelineCard({ step, index }: { step: TimelineStep; index: number }) {
 function LockedPreview({
   followingSteps,
   onUnlock,
+  onSubscribe,
 }: {
   followingSteps: string[];
   onUnlock: () => void;
+  onSubscribe: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -437,7 +601,7 @@ function LockedPreview({
           </button>
           <button
             type="button"
-            onClick={() => alert("会员功能已为你模拟开启。")}
+            onClick={onSubscribe}
             className="rounded-lg border border-[#9b6b55] px-4 py-3 text-sm font-medium text-[#805743] transition hover:bg-white"
           >
             成为会员
@@ -451,11 +615,32 @@ function LockedPreview({
 function FeedbackModal({
   open,
   onClose,
+  onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
+  onSubmit: (rating: string, comment: string) => Promise<void>;
 }) {
   const [submitted, setSubmitted] = useState(false);
+  const [rating, setRating] = useState("有用");
+  const [comment, setComment] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+
+    try {
+      await onSubmit(rating, comment);
+      alert("谢谢反馈");
+      setSubmitted(true);
+      setComment("");
+    } catch (error) {
+      console.error("feedback submit error:", error);
+      alert(error instanceof Error ? error.message : "提交失败，请稍后重试");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -498,13 +683,20 @@ function FeedbackModal({
                     <button
                       key={label}
                       type="button"
-                      className="rounded-lg border border-[#eadfd4] bg-[#fbfaf7] px-3 py-3 text-sm text-[#655b52] transition hover:border-[#2e4d48]"
+                      onClick={() => setRating(label)}
+                      className={`rounded-lg border px-3 py-3 text-sm transition ${
+                        rating === label
+                          ? "border-[#2e4d48] bg-[#e2eee9] text-[#203b37]"
+                          : "border-[#eadfd4] bg-[#fbfaf7] text-[#655b52] hover:border-[#2e4d48]"
+                      }`}
                     >
                       {label}
                     </button>
                   ))}
                 </div>
                 <textarea
+                  value={comment}
+                  onChange={(event) => setComment(event.target.value)}
                   placeholder="后来发生了什么？"
                   className="mt-4 min-h-28 w-full resize-none rounded-lg border border-[#eadfd4] bg-[#fffdfa] p-4 text-sm outline-none focus:border-[#2e4d48]"
                 />
@@ -518,10 +710,11 @@ function FeedbackModal({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSubmitted(true)}
+                    disabled={isSubmitting}
+                    onClick={() => void handleSubmit()}
                     className="flex-1 rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white"
                   >
-                    提交
+                    {isSubmitting ? "提交中..." : "提交"}
                   </button>
                 </div>
               </>
@@ -534,10 +727,13 @@ function FeedbackModal({
 }
 
 function getOrCreateAnonymousId() {
-  const storageKey = "state_translator_anonymous_id";
-  const existingId = localStorage.getItem(storageKey);
+  const storageKey = "anonymous_id";
+  const legacyStorageKey = "state_translator_anonymous_id";
+  const existingId =
+    localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey);
 
   if (existingId) {
+    localStorage.setItem(storageKey, existingId);
     return existingId;
   }
 
@@ -547,6 +743,7 @@ function getOrCreateAnonymousId() {
       : `anon_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   localStorage.setItem(storageKey, newId);
+  localStorage.setItem(legacyStorageKey, newId);
 
   return newId;
 }

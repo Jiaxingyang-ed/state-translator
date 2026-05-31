@@ -209,6 +209,7 @@ function Step2PageContent() {
       initialRouteData={initialRouteData}
       paidOptionId={paidOptionId}
       unlockedTimeline={unlockedTimeline}
+      forceUnlockAll={Boolean(routeIdFromUrl && !sessionId)}
     />
   );
 }
@@ -260,10 +261,13 @@ function normalizeOptionId(value: string | null): OptionId | null {
 }
 
 function getOrCreateAnonymousId() {
-  const storageKey = "state_translator_anonymous_id";
-  const existingId = localStorage.getItem(storageKey);
+  const storageKey = "anonymous_id";
+  const legacyStorageKey = "state_translator_anonymous_id";
+  const existingId =
+    localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey);
 
   if (existingId) {
+    localStorage.setItem(storageKey, existingId);
     return existingId;
   }
 
@@ -273,6 +277,7 @@ function getOrCreateAnonymousId() {
       : `anon_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   localStorage.setItem(storageKey, newId);
+  localStorage.setItem(legacyStorageKey, newId);
 
   return newId;
 }
