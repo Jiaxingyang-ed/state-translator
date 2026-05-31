@@ -3,43 +3,18 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import Step2Decision from "@/components/Step2Decision";
-
-type StepConstraints = {
-  time: string;
-  budget: string;
-};
-
-type OptionId = "A" | "B";
-
-type TimelineStep = {
-  time: string;
-  action: string;
-  environment: string;
-  tip?: string;
-};
-
-type RouteOption = {
-  id: OptionId;
-  title: string;
-  reason: string;
-  preview: string;
-  firstStep: Omit<TimelineStep, "tip">;
-  followingSteps: string[];
-  timeline: TimelineStep[];
-};
-
-type StoredRouteData = {
-  routeId: string;
-  userInput: string;
-  constraints: StepConstraints;
-  translation: string;
-  options: RouteOption[];
-  unlockedOptionIds: OptionId[];
-};
+import type {
+  OptionId,
+  RouteScale,
+  StepConstraints,
+  StoredRouteData,
+  TimelineStep,
+} from "@/lib/routeTypes";
 
 type Step1State = {
   input: string;
   constraints: StepConstraints;
+  scale: RouteScale;
 };
 
 type VerifyPaymentResponse =
@@ -113,6 +88,7 @@ function Step2PageContent() {
               setStep1State({
                 input: verified.route.userInput,
                 constraints: verified.route.constraints,
+                scale: verified.route.scale,
               });
               setInitialRouteData(verified.route);
               setPaidOptionId(verified.paidOptionId);
@@ -133,6 +109,7 @@ function Step2PageContent() {
               setStep1State({
                 input: route.userInput,
                 constraints: route.constraints,
+                scale: route.scale,
               });
               setInitialRouteData(route);
               setPaidOptionId(route.unlockedOptionIds[0] ?? null);
@@ -143,6 +120,9 @@ function Step2PageContent() {
 
           const input = sessionStorage.getItem("step1_input");
           const storedConstraints = sessionStorage.getItem("step1_constraints");
+          const storedScale = normalizeRouteScale(
+            sessionStorage.getItem("step1_scale"),
+          );
 
           if (!input || !storedConstraints) {
             router.replace("/");
@@ -152,6 +132,7 @@ function Step2PageContent() {
           setStep1State({
             input,
             constraints: JSON.parse(storedConstraints) as StepConstraints,
+            scale: storedScale,
           });
           setInitialRouteData(null);
           setPaidOptionId(null);
@@ -206,6 +187,7 @@ function Step2PageContent() {
     <Step2Decision
       userInput={step1State.input}
       constraints={step1State.constraints}
+      scale={step1State.scale}
       initialRouteData={initialRouteData}
       paidOptionId={paidOptionId}
       unlockedTimeline={unlockedTimeline}
@@ -245,6 +227,7 @@ async function fetchStoredRoute(routeId: string, anonymousId: string) {
 function persistRouteLocally(route: StoredRouteData) {
   sessionStorage.setItem("step1_input", route.userInput);
   sessionStorage.setItem("step1_constraints", JSON.stringify(route.constraints));
+  sessionStorage.setItem("step1_scale", route.scale);
   sessionStorage.setItem("step1_route_id", route.routeId);
 }
 
@@ -258,6 +241,21 @@ function LoadingState({ message }: { message: string }) {
 
 function normalizeOptionId(value: string | null): OptionId | null {
   return value === "A" || value === "B" ? value : null;
+}
+
+function normalizeRouteScale(value: string | null): RouteScale {
+  if (
+    value === "auto" ||
+    value === "weekend" ||
+    value === "travel" ||
+    value === "meal" ||
+    value === "book" ||
+    value === "corner"
+  ) {
+    return value;
+  }
+
+  return "tonight";
 }
 
 function getOrCreateAnonymousId() {

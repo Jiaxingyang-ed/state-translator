@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   GeneratedRouteData,
   OptionId,
+  RouteScale,
   RouteOption,
   StepConstraints,
   TimelineStep,
@@ -13,6 +14,7 @@ import type {
 type Step2DecisionProps = {
   userInput: string;
   constraints: StepConstraints;
+  scale: RouteScale;
   initialRouteData?: GeneratedRouteData | null;
   paidOptionId?: OptionId | null;
   unlockedTimeline?: TimelineStep[] | null;
@@ -58,6 +60,7 @@ type UserStatusResponse =
 export default function Step2Decision({
   userInput,
   constraints,
+  scale,
   initialRouteData,
   paidOptionId,
   unlockedTimeline,
@@ -138,6 +141,7 @@ export default function Step2Decision({
           inputText: userInput,
           anonymousId,
           constraints,
+          scale,
           regenerate,
         }),
       });
@@ -151,6 +155,7 @@ export default function Step2Decision({
       }
 
       setData(result.data);
+      sessionStorage.setItem("step1_scale", result.data.scale);
       sessionStorage.setItem("step1_route_id", result.data.routeId);
     } catch (caughtError) {
       const message =
@@ -172,7 +177,7 @@ export default function Step2Decision({
         setIsLoading(false);
       }
     }
-  }, [constraints, userInput]);
+  }, [constraints, scale, userInput]);
 
   useEffect(() => {
     if (initialRouteData) {
@@ -401,7 +406,7 @@ export default function Step2Decision({
         <div className="mb-8 rounded-lg border border-white/70 bg-white/70 p-5 shadow-sm backdrop-blur sm:p-7">
           <p className="mb-3 text-sm text-[#7d746b]">
             你输入的是：{userInput || "未命名状态"} · {constraints.time} ·{" "}
-            {constraints.budget}
+            {constraints.budget} · {getScaleLabel(data.scale)}
           </p>
           <h1 className="max-w-4xl text-3xl font-light leading-tight text-[#29231f] sm:text-4xl">
             {data.translation}
@@ -498,15 +503,11 @@ export default function Step2Decision({
                       <div className="mt-6 space-y-4">
                         {isUnlocked ? (
                           <>
-                            <div className="space-y-3 pt-2">
-                              {timeline.map((step, index) => (
-                                <TimelineCard
-                                  key={`${step.time}-${step.action}`}
-                                  step={step}
-                                  index={index + 1}
-                                />
-                              ))}
-                            </div>
+                            <ScaleTimeline
+                              scale={data.scale}
+                              option={option}
+                              timeline={timeline}
+                            />
                             <div className="flex flex-col gap-3 pt-2 sm:flex-row">
                               <button
                                 type="button"
@@ -598,6 +599,133 @@ function TogglePair<T extends string>({
   );
 }
 
+function ScaleTimeline({
+  scale,
+  option,
+  timeline,
+}: {
+  scale: Exclude<RouteScale, "auto">;
+  option: RouteOption;
+  timeline: TimelineStep[];
+}) {
+  if (scale === "travel") {
+    const groupedSteps = groupTravelTimeline(timeline);
+
+    return (
+      <div className="space-y-4 pt-2">
+        {groupedSteps.map((group) => (
+          <div
+            key={group.day}
+            className="rounded-lg border border-[#eadfd4] bg-[#fffdfa] p-4"
+          >
+            <p className="mb-3 text-sm font-medium text-[#2e4d48]">
+              {group.day}
+            </p>
+            <div className="space-y-3">
+              {group.steps.map((step, index) => (
+                <TimelineCard
+                  key={`${group.day}-${step.time}-${step.action}`}
+                  step={step}
+                  index={index + 1}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (scale === "meal") {
+    return (
+      <div className="space-y-4 pt-2">
+        <ListPanel
+          title="食材清单"
+          fallback={option.firstStep.environment}
+          items={extractListItems(option.firstStep.environment)}
+        />
+        <div className="space-y-3">
+          {timeline.map((step, index) => (
+            <TimelineCard
+              key={`${step.time}-${step.action}`}
+              step={step}
+              index={index + 1}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (scale === "book") {
+    return (
+      <div className="space-y-4 pt-2">
+        <div className="grid gap-4 rounded-lg border border-[#eadfd4] bg-[#fffdfa] p-4 sm:grid-cols-[112px_1fr]">
+          <div className="flex aspect-[3/4] items-center justify-center rounded-lg bg-[#e2eee9] text-4xl font-light text-[#2e4d48]">
+            {option.title.slice(0, 1)}
+          </div>
+          <div className="space-y-3">
+            <p className="text-sm text-[#9b6b55]">
+              {extractAuthor(option.firstStep.environment)}
+            </p>
+            <h3 className="text-2xl font-light text-[#29231f]">
+              {option.title}
+            </h3>
+            <p className="text-sm leading-6 text-[#655b52]">
+              {option.preview}
+            </p>
+            <p className="text-sm leading-6 text-[#655b52]">
+              推荐理由：{option.reason}
+            </p>
+          </div>
+        </div>
+        <div className="space-y-3">
+          {timeline.map((step, index) => (
+            <TimelineCard
+              key={`${step.time}-${step.action}`}
+              step={step}
+              index={index + 1}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (scale === "corner") {
+    return (
+      <div className="space-y-4 pt-2">
+        <ListPanel
+          title="物品清单"
+          fallback={option.firstStep.environment}
+          items={extractListItems(option.firstStep.environment)}
+        />
+        <div className="space-y-3">
+          {timeline.map((step, index) => (
+            <TimelineCard
+              key={`${step.time}-${step.action}`}
+              step={step}
+              index={index + 1}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 pt-2">
+      {timeline.map((step, index) => (
+        <TimelineCard
+          key={`${step.time}-${step.action}`}
+          step={step}
+          index={index + 1}
+        />
+      ))}
+    </div>
+  );
+}
+
 function TimelineCard({ step, index }: { step: TimelineStep; index: number }) {
   return (
     <div className="rounded-lg border border-[#efe5db] bg-[#fffdfa] p-4">
@@ -613,6 +741,36 @@ function TimelineCard({ step, index }: { step: TimelineStep; index: number }) {
         ) : null}
         {step.tip ? <p>小提示：{step.tip}</p> : null}
       </div>
+    </div>
+  );
+}
+
+function ListPanel({
+  title,
+  fallback,
+  items,
+}: {
+  title: string;
+  fallback: string;
+  items: string[];
+}) {
+  return (
+    <div className="rounded-lg border border-[#eadfd4] bg-[#fffdfa] p-4">
+      <p className="mb-3 text-sm font-medium text-[#2e4d48]">{title}</p>
+      {items.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {items.map((item) => (
+            <span
+              key={item}
+              className="rounded-full border border-[#eadfd4] bg-white px-3 py-1.5 text-sm text-[#655b52]"
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm leading-6 text-[#655b52]">{fallback}</p>
+      )}
     </div>
   );
 }
@@ -770,6 +928,56 @@ function getLockedBlurClass(index: number) {
   }
 
   return "blur-lg";
+}
+
+function getScaleLabel(scale: RouteScale) {
+  const labels: Record<RouteScale, string> = {
+    auto: "自动尺度",
+    tonight: "今晚",
+    weekend: "周末",
+    travel: "旅行",
+    meal: "一顿饭",
+    book: "一本书",
+    corner: "一个角落",
+  };
+
+  return labels[scale];
+}
+
+function groupTravelTimeline(timeline: TimelineStep[]) {
+  const groups = new Map<string, TimelineStep[]>();
+
+  timeline.forEach((step, index) => {
+    const explicitDay = step.time.match(/第[一二三四五六七八九十\d]+天|Day\s*\d+/i)?.[0];
+    const fallbackDay = `第${Math.floor(index / 2) + 1}天`;
+    const day = explicitDay ?? fallbackDay;
+
+    groups.set(day, [...(groups.get(day) ?? []), step]);
+  });
+
+  return Array.from(groups.entries()).map(([day, steps]) => ({ day, steps }));
+}
+
+function extractListItems(text: string) {
+  const normalizedText = text
+    .replace(/^(食材|材料|物品|清单|环境|地点|准备)[：:]/, "")
+    .replace(/[。.!！]$/, "");
+
+  return normalizedText
+    .split(/[、，,；;\n]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2 && item.length <= 16)
+    .slice(0, 10);
+}
+
+function extractAuthor(text: string) {
+  const authorMatch = text.match(/作者[：:]\s*([^，,；;\n]+)/);
+
+  if (authorMatch?.[1]) {
+    return `作者：${authorMatch[1].trim()}`;
+  }
+
+  return text.includes("作者") ? text : "作者信息会在路线里展开";
 }
 
 function FeedbackModal({

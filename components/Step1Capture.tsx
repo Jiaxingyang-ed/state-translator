@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { StepConstraints } from "@/lib/routeTypes";
+import type { RouteScale, StepConstraints } from "@/lib/routeTypes";
 
 type StrictStepConstraints = {
   time: "今晚" | "周末" | "更长";
@@ -9,7 +9,11 @@ type StrictStepConstraints = {
 };
 
 type Step1CaptureProps = {
-  onSubmit: (input: string, constraints: StepConstraints) => void;
+  onSubmit: (
+    input: string,
+    constraints: StepConstraints,
+    scale: RouteScale,
+  ) => void;
 };
 
 const quickTags = [
@@ -28,10 +32,20 @@ const budgetOptions: StrictStepConstraints["budget"][] = [
   "500内",
   "不限",
 ];
+const scaleOptions: Array<{ label: string; value: RouteScale }> = [
+  { label: "不限", value: "auto" },
+  { label: "今晚", value: "tonight" },
+  { label: "周末", value: "weekend" },
+  { label: "旅行", value: "travel" },
+  { label: "一顿饭", value: "meal" },
+  { label: "一本书", value: "book" },
+  { label: "一个角落", value: "corner" },
+];
 
 export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
   const [input, setInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [scale, setScale] = useState<RouteScale>("auto");
   const [constraints, setConstraints] = useState<StrictStepConstraints>({
     time: "今晚",
     budget: "0元",
@@ -44,7 +58,7 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
       <div className="mb-10">
         <p className="mb-3 text-sm text-[#7d746b]">状态翻译器</p>
         <h1 className="max-w-2xl text-4xl font-light leading-tight text-[#29231f] sm:text-5xl">
-          把现在说不清的感觉，翻译成一种今晚能开始的活法。
+          把现在说不清的感觉，翻译成一种今天能开始的活法。
         </h1>
       </div>
 
@@ -67,6 +81,26 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
               {tag}
             </button>
           ))}
+        </div>
+
+        <div className="mt-5">
+          <p className="mb-2 text-sm text-[#7d746b]">尺度</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {scaleOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setScale(option.value)}
+                className={`rounded-lg border px-3 py-2 text-sm transition ${
+                  scale === option.value
+                    ? "border-[#2e4d48] bg-[#e2eee9] text-[#203b37]"
+                    : "border-[#eadfD4] bg-white text-[#6f665d] hover:bg-[#fbf4ec]"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <button
@@ -101,7 +135,7 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
         <button
           type="button"
           disabled={!canSubmit}
-          onClick={() => onSubmit(input.trim(), constraints)}
+          onClick={() => onSubmit(input.trim(), constraints, scale)}
           className="mt-7 w-full rounded-lg bg-[#2e4d48] px-5 py-4 text-base font-medium text-white transition hover:bg-[#243f3b] disabled:cursor-not-allowed disabled:bg-[#cfc7bd]"
         >
           看看可以怎么过

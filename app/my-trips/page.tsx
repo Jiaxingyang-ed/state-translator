@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 type SavedTrip = {
   routeId: string;
   userInput: string;
+  scale: "tonight" | "weekend" | "travel" | "meal" | "book" | "corner";
   translation: string;
   optionId: "A" | "B";
   title: string;
@@ -102,7 +103,8 @@ export default function MyTripsPage() {
               className="rounded-lg border border-[#e8ded2] bg-white/85 p-5 shadow-sm backdrop-blur"
             >
               <p className="mb-2 text-sm text-[#2e4d48]">
-                {trip.optionId === "A" ? "A 安抚型" : "B 微突破型"}
+                {trip.optionId === "A" ? "A 安抚型" : "B 微突破型"} ·{" "}
+                {getScaleLabel(trip.scale)}
               </p>
               <h2 className="text-2xl font-light text-[#29231f]">
                 {trip.title}
@@ -133,6 +135,19 @@ export default function MyTripsPage() {
       </div>
     </main>
   );
+}
+
+function getScaleLabel(scale: SavedTrip["scale"]) {
+  const labels: Record<SavedTrip["scale"], string> = {
+    tonight: "今晚",
+    weekend: "周末",
+    travel: "旅行",
+    meal: "一顿饭",
+    book: "一本书",
+    corner: "一个角落",
+  };
+
+  return labels[scale];
 }
 
 function getOrCreateAnonymousId() {

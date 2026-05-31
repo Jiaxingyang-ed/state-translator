@@ -1,5 +1,14 @@
 export type OptionId = "A" | "B";
 
+export type RouteScale =
+  | "auto"
+  | "tonight"
+  | "weekend"
+  | "travel"
+  | "meal"
+  | "book"
+  | "corner";
+
 export type StepConstraints = {
   time: string;
   budget: string;
@@ -28,6 +37,7 @@ export type RouteOption = {
 
 export type GeneratedRouteData = {
   routeId: string;
+  scale: Exclude<RouteScale, "auto">;
   translation: string;
   options: RouteOption[];
   unlockedOptionIds: OptionId[];

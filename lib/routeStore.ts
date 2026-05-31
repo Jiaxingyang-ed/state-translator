@@ -1,6 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabaseClient";
 import type {
   OptionId,
+  RouteScale,
   RouteOption,
   StepConstraints,
   StoredRouteData,
@@ -10,6 +11,7 @@ type GeneratedRouteRow = {
   id: string;
   user_input: string;
   constraints: StepConstraints;
+  scale: RouteScale;
   translation: string;
   options: RouteOption[];
 };
@@ -26,7 +28,7 @@ export async function getStoredRoute(
 
   const { data: routeRow, error: routeError } = await supabase
     .from("generated_routes")
-    .select("id, user_input, constraints, translation, options")
+    .select("id, user_input, constraints, scale, translation, options")
     .eq("id", routeId)
     .eq("anonymous_id", anonymousId)
     .single();
@@ -56,6 +58,7 @@ export async function getStoredRoute(
     routeId: typedRoute.id,
     userInput: typedRoute.user_input,
     constraints: typedRoute.constraints,
+    scale: normalizeScale(typedRoute.scale),
     translation: typedRoute.translation,
     options: typedRoute.options,
     unlockedOptionIds,
@@ -64,4 +67,18 @@ export async function getStoredRoute(
 
 function normalizeOptionId(value: string): OptionId | null {
   return value === "A" || value === "B" ? value : null;
+}
+
+function normalizeScale(value: string | null | undefined): Exclude<RouteScale, "auto"> {
+  if (
+    value === "weekend" ||
+    value === "travel" ||
+    value === "meal" ||
+    value === "book" ||
+    value === "corner"
+  ) {
+    return value;
+  }
+
+  return "tonight";
 }

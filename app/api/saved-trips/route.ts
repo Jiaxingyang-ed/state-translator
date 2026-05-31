@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseClient";
-import type { RouteOption, StepConstraints } from "@/lib/routeTypes";
+import type { RouteOption, RouteScale, StepConstraints } from "@/lib/routeTypes";
 
 type SavedTripRow = {
   route_id: string;
@@ -10,6 +10,7 @@ type GeneratedRouteRow = {
   id: string;
   user_input: string;
   constraints: StepConstraints;
+  scale: RouteScale;
   translation: string;
   options: RouteOption[];
   created_at: string;
@@ -51,7 +52,7 @@ export async function GET(request: Request) {
 
     const { data: routeRows, error: routeError } = await supabase
       .from("generated_routes")
-      .select("id, user_input, constraints, translation, options, created_at")
+      .select("id, user_input, constraints, scale, translation, options, created_at")
       .in("id", routeIds);
 
     if (routeError) {
@@ -69,6 +70,7 @@ export async function GET(request: Request) {
         routeId: route.id,
         userInput: route.user_input,
         constraints: route.constraints,
+        scale: route.scale ?? "tonight",
         translation: route.translation,
         optionId: option?.id ?? "A",
         title: option?.title ?? route.translation,
