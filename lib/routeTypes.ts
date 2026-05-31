@@ -9,6 +9,7 @@ export type FirstStep = {
   time: string;
   action: string;
   environment: string;
+  surprise?: string;
 };
 
 export type TimelineStep = FirstStep & {

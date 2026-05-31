@@ -6,10 +6,18 @@ import type { GeneratedRouteData, OptionId } from "@/lib/routeTypes";
 type RequestBody = {
   inputText?: unknown;
   anonymousId?: unknown;
+  regenerate?: unknown;
   constraints?: {
     time?: unknown;
     budget?: unknown;
   };
+};
+
+type GeneratedFirstStep = {
+  time: string;
+  action: string;
+  environment: string;
+  surprise: string;
 };
 
 type GeneratedStep = {
@@ -24,7 +32,7 @@ type GeneratedOption = {
   title: string;
   reason: string;
   preview: string;
-  firstStep: Omit<GeneratedStep, "tip">;
+  firstStep: GeneratedFirstStep;
   followingSteps: string[];
   timeline: GeneratedStep[];
 };
@@ -51,7 +59,8 @@ JSON 结构必须严格如下：
       "firstStep": {
         "time": string,
         "action": string,
-        "environment": string
+        "environment": string,
+        "surprise": string
       },
       "followingSteps": string[],
       "timeline": [
@@ -71,7 +80,8 @@ JSON 结构必须严格如下：
       "firstStep": {
         "time": string,
         "action": string,
-        "environment": string
+        "environment": string,
+        "surprise": string
       },
       "followingSteps": string[],
       "timeline": [
@@ -95,7 +105,9 @@ JSON 结构必须严格如下：
 - reason 20 个中文字符左右，说明为什么适配。
 - preview 是一句路线预览，必须具体。
 - firstStep 必须是免费可试的第一步，马上能做。
+- firstStep.surprise 必须是一个具体、可感知的微小惊喜，描述用户执行第一步时可能注意到的细节；必须落在真实生活场景中，可看见、听见、闻到或触摸到，避免抽象情绪词。例如：“第二个路口的便利店冰柜会有一排蓝色小灯”。
 - followingSteps 必须是 2-3 条字符串，描述后续锁定步骤的方向。
+- followingSteps 每条尽量以前 5-10 个字形成清晰关键词，方便前端截取成模糊预览标题。
 - timeline 必须是 3-5 步，包含 firstStep 对应内容或自然承接它。
 - 每一步都要具体、可执行，包含时间、动作、环境；tip 可短。
 - 严格遵守用户给出的时间和预算约束。
@@ -117,6 +129,7 @@ export async function POST(request: Request) {
       typeof body.constraints?.budget === "string"
         ? body.constraints.budget
         : "";
+    const regenerate = body.regenerate === true;
 
     if (!inputText) {
       return NextResponse.json(
@@ -166,6 +179,10 @@ export async function POST(request: Request) {
           content: JSON.stringify({
             inputText,
             constraints: { time, budget },
+            regenerate,
+            instruction: regenerate
+              ? "这是用户点击“换两个看看”的重新生成请求，请避开过于相似的路线角度。"
+              : undefined,
           }),
         },
       ],
@@ -274,7 +291,7 @@ function isGeneratedOption(
     typeof value.title === "string" &&
     typeof value.reason === "string" &&
     typeof value.preview === "string" &&
-    isStepWithoutTip(value.firstStep) &&
+    isFirstStep(value.firstStep) &&
     Array.isArray(value.followingSteps) &&
     value.followingSteps.length >= 2 &&
     value.followingSteps.length <= 3 &&
@@ -283,6 +300,13 @@ function isGeneratedOption(
     value.timeline.length >= 3 &&
     value.timeline.length <= 5 &&
     value.timeline.every(isStep)
+  );
+}
+
+function isFirstStep(value: unknown): value is GeneratedFirstStep {
+  return (
+    isStepWithoutTip(value) &&
+    typeof (value as Record<string, unknown>).surprise === "string"
   );
 }
 

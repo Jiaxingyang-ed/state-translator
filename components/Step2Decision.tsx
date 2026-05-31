@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   GeneratedRouteData,
   OptionId,
@@ -68,6 +68,12 @@ export default function Step2Decision({
   );
   const [isLoading, setIsLoading] = useState(!initialRouteData);
   const [error, setError] = useState<string | null>(null);
+  const [activePaidOptionId, setActivePaidOptionId] = useState<OptionId | null>(
+    paidOptionId ?? null,
+  );
+  const [activeUnlockedTimeline, setActiveUnlockedTimeline] = useState<
+    TimelineStep[] | null
+  >(unlockedTimeline ?? null);
   const [expanded, setExpanded] = useState<OptionId | null>(paidOptionId ?? null);
   const [unlocked, setUnlocked] = useState<Record<string, boolean>>({});
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -77,6 +83,8 @@ export default function Step2Decision({
   const [isMember, setIsMember] = useState(false);
   const [socialMode, setSocialMode] = useState<"独自" | "可约人">("独自");
   const [energyMode, setEnergyMode] = useState<"低能量" | "正常">("低能量");
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [lastRegenerateAt, setLastRegenerateAt] = useState(0);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -102,13 +110,24 @@ export default function Step2Decision({
     });
   }, []);
 
-  const generateOptions = useCallback(async () => {
-    setIsLoading(true);
+  const generateOptions = useCallback(async (regenerate = false) => {
+    if (regenerate) {
+      setIsRegenerating(true);
+    } else {
+      setIsLoading(true);
+    }
+
     setError(null);
     setExpanded(null);
     setUnlocked({});
 
     try {
+      if (regenerate) {
+        setActivePaidOptionId(null);
+        setActiveUnlockedTimeline(null);
+        setFeedbackOpen(false);
+      }
+
       const anonymousId = getOrCreateAnonymousId();
       const response = await fetch("/api/generate-options", {
         method: "POST",
@@ -119,6 +138,7 @@ export default function Step2Decision({
           inputText: userInput,
           anonymousId,
           constraints,
+          regenerate,
         }),
       });
 
@@ -133,14 +153,24 @@ export default function Step2Decision({
       setData(result.data);
       sessionStorage.setItem("step1_route_id", result.data.routeId);
     } catch (caughtError) {
-      setData(null);
-      setError(
+      const message =
         caughtError instanceof Error
           ? caughtError.message
-          : "生成失败，请稍后重试",
-      );
+          : "生成失败，请稍后重试";
+
+      if (regenerate) {
+        alert(message);
+        return;
+      }
+
+      setData(null);
+      setError(message);
     } finally {
-      setIsLoading(false);
+      if (regenerate) {
+        setIsRegenerating(false);
+      } else {
+        setIsLoading(false);
+      }
     }
   }, [constraints, userInput]);
 
@@ -164,10 +194,23 @@ export default function Step2Decision({
     }
 
     queueMicrotask(() => {
+      setActivePaidOptionId(paidOptionId);
+      setActiveUnlockedTimeline(unlockedTimeline ?? null);
       setUnlocked((current) => ({ ...current, [paidOptionId]: true }));
       setExpanded(paidOptionId);
     });
-  }, [paidOptionId]);
+  }, [paidOptionId, unlockedTimeline]);
+
+  const handleRegenerate = async () => {
+    const now = Date.now();
+
+    if (isRegenerating || now - lastRegenerateAt < 2000) {
+      return;
+    }
+
+    setLastRegenerateAt(now);
+    await generateOptions(true);
+  };
 
   const handlePay = async (option: RouteOption) => {
     try {
@@ -396,11 +439,11 @@ export default function Step2Decision({
             const isUnlocked =
               isMemberUnlocked ||
               unlocked[option.id] ||
-              paidOptionId === option.id ||
+              activePaidOptionId === option.id ||
               data.unlockedOptionIds.includes(option.id);
             const timeline =
-              paidOptionId === option.id && unlockedTimeline
-                ? unlockedTimeline
+              activePaidOptionId === option.id && activeUnlockedTimeline
+                ? activeUnlockedTimeline
                 : option.timeline;
 
             return (
@@ -502,6 +545,19 @@ export default function Step2Decision({
             );
           })}
         </div>
+
+        {!forceUnlockAll ? (
+          <div className="mt-7 flex justify-center">
+            <button
+              type="button"
+              disabled={isRegenerating}
+              onClick={() => void handleRegenerate()}
+              className="rounded-lg border border-[#2e4d48] bg-white/70 px-5 py-3 text-sm font-medium text-[#2e4d48] shadow-sm transition hover:bg-[#e2eee9] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isRegenerating ? "正在找新路线…" : "换两个看看"}
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <FeedbackModal
@@ -552,6 +608,9 @@ function TimelineCard({ step, index }: { step: TimelineStep; index: number }) {
       <p className="text-base leading-7 text-[#29231f]">{step.action}</p>
       <div className="mt-3 space-y-2 text-sm leading-6 text-[#6f665d]">
         <p>环境：{step.environment}</p>
+        {step.surprise ? (
+          <p className="italic text-[#9b6b55]">微小惊喜：{step.surprise}</p>
+        ) : null}
         {step.tip ? <p>小提示：{step.tip}</p> : null}
       </div>
     </div>
@@ -567,49 +626,150 @@ function LockedPreview({
   onUnlock: () => void;
   onSubscribe: () => void;
 }) {
+  const [showPayGuide, setShowPayGuide] = useState(false);
+  const firstLockedCardRef = useRef<HTMLDivElement | null>(null);
+  const hasUserScrolledRef = useRef(false);
+
+  useEffect(() => {
+    hasUserScrolledRef.current = false;
+
+    const timer = window.setTimeout(() => {
+      setShowPayGuide(true);
+    }, 5000);
+
+    const node = firstLockedCardRef.current;
+    const showWhenLockedAreaIsVisible = () => {
+      if (!node) {
+        return;
+      }
+
+      const rect = node.getBoundingClientRect();
+      const isVisible = rect.top < window.innerHeight && rect.bottom > 0;
+
+      if (isVisible) {
+        setShowPayGuide(true);
+      }
+    };
+    const handleScroll = () => {
+      hasUserScrolledRef.current = true;
+      showWhenLockedAreaIsVisible();
+    };
+    const observer =
+      node && "IntersectionObserver" in window
+        ? new IntersectionObserver(
+            ([entry]) => {
+              if (entry?.isIntersecting && hasUserScrolledRef.current) {
+                setShowPayGuide(true);
+              }
+            },
+            { threshold: 0.35 },
+          )
+        : null;
+
+    if (node && observer) {
+      observer.observe(node);
+    }
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("scroll", handleScroll);
+      observer?.disconnect();
+    };
+  }, [followingSteps]);
+
   return (
     <div className="space-y-4">
       <div className="space-y-3">
         {followingSteps.map((step, index) => (
           <div
             key={`${step}-${index}`}
+            ref={index === 0 ? firstLockedCardRef : undefined}
             className="relative overflow-hidden rounded-lg border border-[#efe5db] bg-[#fffdfa] p-4"
           >
-            <p className="blur-sm text-sm leading-6 text-[#655b52]">{step}</p>
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/55 text-center">
+            <p className="text-sm font-medium text-[#433b34]">
+              {getLockedStepTitle(step)}
+            </p>
+            <p
+              className={`${getLockedBlurClass(index)} mt-2 text-sm leading-6 text-[#655b52] opacity-75`}
+            >
+              {step}
+            </p>
+            <p className="mt-4 text-xs text-[#9b6b55]">
+              还有 {followingSteps.length - index} 步
+            </p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/45 text-center">
               <span aria-hidden="true" className="text-2xl">
                 🔒
               </span>
               <p className="mt-2 text-sm font-medium text-[#433b34]">
-                后续步骤 {index + 1}
+                只差一点点
               </p>
             </div>
           </div>
         ))}
       </div>
-      <div className="rounded-lg border border-[#eadfd4] bg-[#fbf4ec] p-4">
-        <p className="text-sm text-[#655b52]">
-          解锁完整路线 $2.99 /次，或会员 $7.99/月
-        </p>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={onUnlock}
-            className="rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
+      <AnimatePresence>
+        {showPayGuide ? (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.24, ease: "easeOut" }}
+            className="rounded-lg border border-[#eadfd4] bg-[#fbf4ec] p-4"
           >
-            解锁本次
-          </button>
-          <button
-            type="button"
-            onClick={onSubscribe}
-            className="rounded-lg border border-[#9b6b55] px-4 py-3 text-sm font-medium text-[#805743] transition hover:bg-white"
-          >
-            成为会员
-          </button>
-        </div>
-      </div>
+            <p className="text-sm text-[#655b52]">
+              我已经开始好奇完整路线了，解锁它吗？
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={onUnlock}
+                className="rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
+              >
+                $2.99 解锁本次
+              </button>
+              <div>
+                <button
+                  type="button"
+                  onClick={onSubscribe}
+                  className="w-full rounded-lg border border-[#9b6b55] px-4 py-3 text-sm font-medium text-[#805743] transition hover:bg-white"
+                >
+                  $7.99/月 成为会员
+                </button>
+                <p className="mt-2 text-center text-xs text-[#9b6b55]">
+                  14天内可退款
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
+}
+
+function getLockedStepTitle(step: string) {
+  const trimmedStep = step.trim();
+
+  if (trimmedStep.length <= 10) {
+    return trimmedStep;
+  }
+
+  return `${trimmedStep.slice(0, 10)}…`;
+}
+
+function getLockedBlurClass(index: number) {
+  if (index === 0) {
+    return "blur-sm";
+  }
+
+  if (index === 1) {
+    return "blur-md";
+  }
+
+  return "blur-lg";
 }
 
 function FeedbackModal({
