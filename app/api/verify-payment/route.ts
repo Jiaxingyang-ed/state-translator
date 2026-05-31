@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
+import { createSupabaseServerClient } from "@/lib/supabaseClient";
+import { getStoredRoute } from "@/lib/routeStore";
+import type { OptionId } from "@/lib/routeTypes";
 
 const STRIPE_CONFIG = {
   apiVersion: "2025-02-24.acacia",
@@ -28,9 +31,60 @@ export async function GET(request: Request) {
     }
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const paid = session.payment_status === "paid";
+
+    if (!paid) {
+      return NextResponse.json({ paid: false });
+    }
+
+    const routeId = session.metadata?.routeId;
+    const anonymousId = session.metadata?.anonymousId;
+    const optionId = normalizeOptionId(session.metadata?.optionId);
+
+    if (!routeId || !anonymousId || !optionId) {
+      return NextResponse.json(
+        { error: "Stripe Session metadata 不完整" },
+        { status: 500 },
+      );
+    }
+
+    const supabase = createSupabaseServerClient();
+    const { error: unlockError } = await supabase.from("unlocks").upsert(
+      {
+        anonymous_id: anonymousId,
+        route_id: routeId,
+        option_id: optionId,
+        stripe_session_id: session.id,
+      },
+      { onConflict: "stripe_session_id" },
+    );
+
+    if (unlockError) {
+      console.error("verify-payment unlock insert error:", unlockError);
+
+      return NextResponse.json(
+        { error: "保存解锁记录失败，请稍后重试" },
+        { status: 500 },
+      );
+    }
+
+    const route = await getStoredRoute(routeId, anonymousId);
+
+    if (!route) {
+      return NextResponse.json(
+        { error: "支付成功，但未找到原始路线" },
+        { status: 404 },
+      );
+    }
+
+    const unlockedTimeline =
+      route.options.find((option) => option.id === optionId)?.timeline ?? null;
 
     return NextResponse.json({
-      paid: session.payment_status === "paid",
+      paid: true,
+      route,
+      paidOptionId: optionId,
+      unlockedTimeline,
     });
   } catch (error) {
     console.error("verify-payment error:", error);
@@ -40,4 +94,8 @@ export async function GET(request: Request) {
       { status: 500 },
     );
   }
+}
+
+function normalizeOptionId(value: string | undefined): OptionId | null {
+  return value === "A" || value === "B" ? value : null;
 }

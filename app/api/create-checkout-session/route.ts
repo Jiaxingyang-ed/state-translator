@@ -3,6 +3,8 @@ import Stripe from "stripe";
 
 type CreateCheckoutSessionBody = {
   optionId?: unknown;
+  routeId?: unknown;
+  anonymousId?: unknown;
   planName?: unknown;
   amount?: unknown;
 };
@@ -25,6 +27,9 @@ export async function POST(request: Request) {
     const body = (await request.json()) as CreateCheckoutSessionBody;
     const optionId =
       typeof body.optionId === "string" ? body.optionId.trim() : "";
+    const routeId = typeof body.routeId === "string" ? body.routeId.trim() : "";
+    const anonymousId =
+      typeof body.anonymousId === "string" ? body.anonymousId.trim() : "";
     const planName =
       typeof body.planName === "string" ? body.planName.trim() : "";
     const amount = typeof body.amount === "number" ? body.amount : 0;
@@ -32,6 +37,13 @@ export async function POST(request: Request) {
     if (!optionId || !["A", "B"].includes(optionId)) {
       return NextResponse.json(
         { error: "optionId 必须是 A 或 B" },
+        { status: 400 },
+      );
+    }
+
+    if (!routeId || !anonymousId) {
+      return NextResponse.json(
+        { error: "routeId 和 anonymousId 不能为空" },
         { status: 400 },
       );
     }
@@ -55,6 +67,7 @@ export async function POST(request: Request) {
     });
     const baseUrl = getBaseUrl(request);
     const encodedOptionId = encodeURIComponent(optionId);
+    const encodedRouteId = encodeURIComponent(routeId);
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
@@ -72,10 +85,12 @@ export async function POST(request: Request) {
         },
       ],
       metadata: {
+        routeId,
+        anonymousId,
         optionId,
         planName,
       },
-      success_url: `${baseUrl}/step2?session_id={CHECKOUT_SESSION_ID}&optionId=${encodedOptionId}`,
+      success_url: `${baseUrl}/step2?session_id={CHECKOUT_SESSION_ID}&optionId=${encodedOptionId}&routeId=${encodedRouteId}`,
       cancel_url: `${baseUrl}/step2`,
     });
 

@@ -2,33 +2,26 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
-import type { StepConstraints } from "./Step1Capture";
+import type {
+  GeneratedRouteData,
+  OptionId,
+  RouteOption,
+  StepConstraints,
+  TimelineStep,
+} from "@/lib/routeTypes";
 
 type Step2DecisionProps = {
   userInput: string;
   constraints: StepConstraints;
-  paidOptionId?: RouteOption["id"] | null;
-};
-
-type RouteOption = {
-  id: "A" | "B";
-  title: string;
-  reason: string;
-  preview: string;
-  firstStep: FirstStep;
-  followingSteps: string[];
-  timeline: TimelineStep[];
-};
-
-type GeneratedData = {
-  translation: string;
-  options: RouteOption[];
+  initialRouteData?: GeneratedRouteData | null;
+  paidOptionId?: OptionId | null;
+  unlockedTimeline?: TimelineStep[] | null;
 };
 
 type GenerateOptionsApiResponse =
   | {
       success: true;
-      data: GeneratedData;
+      data: GeneratedRouteData;
     }
   | {
       error: string;
@@ -43,25 +36,19 @@ type CreateCheckoutSessionResponse =
       error: string;
     };
 
-type FirstStep = {
-  time: string;
-  action: string;
-  environment: string;
-};
-
-type TimelineStep = FirstStep & {
-  tip?: string;
-};
-
 export default function Step2Decision({
   userInput,
   constraints,
+  initialRouteData,
   paidOptionId,
+  unlockedTimeline,
 }: Step2DecisionProps) {
-  const [data, setData] = useState<GeneratedData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [data, setData] = useState<GeneratedRouteData | null>(
+    initialRouteData ?? null,
+  );
+  const [isLoading, setIsLoading] = useState(!initialRouteData);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<RouteOption["id"] | null>(null);
+  const [expanded, setExpanded] = useState<OptionId | null>(paidOptionId ?? null);
   const [unlocked, setUnlocked] = useState<Record<string, boolean>>({});
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [socialMode, setSocialMode] = useState<"独自" | "可约人">("独自");
@@ -74,6 +61,7 @@ export default function Step2Decision({
     setUnlocked({});
 
     try {
+      const anonymousId = getOrCreateAnonymousId();
       const response = await fetch("/api/generate-options", {
         method: "POST",
         headers: {
@@ -81,6 +69,7 @@ export default function Step2Decision({
         },
         body: JSON.stringify({
           inputText: userInput,
+          anonymousId,
           constraints,
         }),
       });
@@ -94,6 +83,7 @@ export default function Step2Decision({
       }
 
       setData(result.data);
+      sessionStorage.setItem("step1_route_id", result.data.routeId);
     } catch (caughtError) {
       setData(null);
       setError(
@@ -107,10 +97,18 @@ export default function Step2Decision({
   }, [constraints, userInput]);
 
   useEffect(() => {
+    if (initialRouteData) {
+      queueMicrotask(() => {
+        setData(initialRouteData);
+        setIsLoading(false);
+      });
+      return;
+    }
+
     queueMicrotask(() => {
       void generateOptions();
     });
-  }, [generateOptions]);
+  }, [generateOptions, initialRouteData]);
 
   useEffect(() => {
     if (!paidOptionId) {
@@ -125,6 +123,11 @@ export default function Step2Decision({
 
   const handlePay = async (option: RouteOption) => {
     try {
+      if (!data?.routeId) {
+        throw new Error("路线尚未保存，请刷新后重试");
+      }
+
+      const anonymousId = getOrCreateAnonymousId();
       const response = await fetch("/api/create-checkout-session", {
         method: "POST",
         headers: {
@@ -132,6 +135,8 @@ export default function Step2Decision({
         },
         body: JSON.stringify({
           optionId: option.id,
+          routeId: data.routeId,
+          anonymousId,
           planName: `${option.title}完整路线`,
           amount: 299,
         }),
@@ -237,7 +242,14 @@ export default function Step2Decision({
         <div className="grid gap-5 lg:grid-cols-2">
           {data.options.map((option) => {
             const isExpanded = expanded === option.id;
-            const isUnlocked = unlocked[option.id] || paidOptionId === option.id;
+            const isUnlocked =
+              unlocked[option.id] ||
+              paidOptionId === option.id ||
+              data.unlockedOptionIds.includes(option.id);
+            const timeline =
+              paidOptionId === option.id && unlockedTimeline
+                ? unlockedTimeline
+                : option.timeline;
 
             return (
               <motion.article
@@ -290,7 +302,7 @@ export default function Step2Decision({
                         {isUnlocked ? (
                           <>
                             <div className="space-y-3 pt-2">
-                              {option.timeline.map((step, index) => (
+                              {timeline.map((step, index) => (
                                 <TimelineCard
                                   key={`${step.time}-${step.action}`}
                                   step={step}
@@ -519,4 +531,22 @@ function FeedbackModal({
       ) : null}
     </AnimatePresence>
   );
+}
+
+function getOrCreateAnonymousId() {
+  const storageKey = "state_translator_anonymous_id";
+  const existingId = localStorage.getItem(storageKey);
+
+  if (existingId) {
+    return existingId;
+  }
+
+  const newId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `anon_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  localStorage.setItem(storageKey, newId);
+
+  return newId;
 }

@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
-import { createSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { createSupabaseServerClient } from "@/lib/supabaseClient";
 import type { GeneratedRouteData, OptionId } from "@/lib/routeTypes";
 
 type RequestBody = {
@@ -191,7 +191,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const supabase = createSupabaseAdmin();
+    const supabase = createSupabaseServerClient();
     const { data: insertedRoute, error: insertError } = await supabase
       .from("generated_routes")
       .insert({
