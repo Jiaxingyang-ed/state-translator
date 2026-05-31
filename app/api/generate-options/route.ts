@@ -1,8 +1,11 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { createSupabaseAdmin } from "@/lib/supabaseAdmin";
+import type { GeneratedRouteData, OptionId } from "@/lib/routeTypes";
 
 type RequestBody = {
   inputText?: unknown;
+  anonymousId?: unknown;
   constraints?: {
     time?: unknown;
     budget?: unknown;
@@ -17,7 +20,7 @@ type GeneratedStep = {
 };
 
 type GeneratedOption = {
-  id: "A" | "B";
+  id: OptionId;
   title: string;
   reason: string;
   preview: string;
@@ -104,6 +107,8 @@ export async function POST(request: Request) {
     const body = (await request.json()) as RequestBody;
     const inputText =
       typeof body.inputText === "string" ? body.inputText.trim() : "";
+    const anonymousId =
+      typeof body.anonymousId === "string" ? body.anonymousId.trim() : "";
     const time =
       typeof body.constraints?.time === "string"
         ? body.constraints.time
@@ -116,6 +121,13 @@ export async function POST(request: Request) {
     if (!inputText) {
       return NextResponse.json(
         { error: "inputText 不能为空" },
+        { status: 400 },
+      );
+    }
+
+    if (!anonymousId) {
+      return NextResponse.json(
+        { error: "anonymousId 不能为空" },
         { status: 400 },
       );
     }
@@ -179,7 +191,36 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({ success: true, data });
+    const supabase = createSupabaseAdmin();
+    const { data: insertedRoute, error: insertError } = await supabase
+      .from("generated_routes")
+      .insert({
+        anonymous_id: anonymousId,
+        user_input: inputText,
+        constraints: { time, budget },
+        translation: data.translation,
+        options: data.options,
+      })
+      .select("id")
+      .single();
+
+    if (insertError || !insertedRoute) {
+      console.error("generated_routes insert error:", insertError);
+
+      return NextResponse.json(
+        { error: "保存生成路线失败，请稍后重试" },
+        { status: 500 },
+      );
+    }
+
+    const responseData: GeneratedRouteData = {
+      routeId: insertedRoute.id as string,
+      translation: data.translation,
+      options: data.options,
+      unlockedOptionIds: [],
+    };
+
+    return NextResponse.json({ success: true, data: responseData });
   } catch (error) {
     console.error("generate-options error:", error);
 

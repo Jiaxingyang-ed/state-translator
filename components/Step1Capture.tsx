@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import type { StepConstraints } from "@/lib/routeTypes";
 
-export type StepConstraints = {
+type StrictStepConstraints = {
   time: "今晚" | "周末" | "更长";
   budget: "0元" | "200内" | "500内" | "不限";
 };
@@ -20,8 +21,8 @@ const quickTags = [
   "想换个空气",
 ];
 
-const timeOptions: StepConstraints["time"][] = ["今晚", "周末", "更长"];
-const budgetOptions: StepConstraints["budget"][] = [
+const timeOptions: StrictStepConstraints["time"][] = ["今晚", "周末", "更长"];
+const budgetOptions: StrictStepConstraints["budget"][] = [
   "0元",
   "200内",
   "500内",
@@ -31,7 +32,7 @@ const budgetOptions: StepConstraints["budget"][] = [
 export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
   const [input, setInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
-  const [constraints, setConstraints] = useState<StepConstraints>({
+  const [constraints, setConstraints] = useState<StrictStepConstraints>({
     time: "今晚",
     budget: "0元",
   });
