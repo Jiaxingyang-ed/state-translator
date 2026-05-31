@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import Step1Capture, { type StepConstraints } from "@/components/Step1Capture";
+import Step1Capture from "@/components/Step1Capture";
 
 export default function Home() {
   const router = useRouter();
