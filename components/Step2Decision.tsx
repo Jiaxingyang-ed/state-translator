@@ -2,11 +2,13 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
+import { stripePromise } from "@/lib/stripe";
 import type { StepConstraints } from "./Step1Capture";
 
 type Step2DecisionProps = {
   userInput: string;
   constraints: StepConstraints;
+  paidOptionId?: RouteOption["id"] | null;
 };
 
 type RouteOption = {
@@ -33,6 +35,21 @@ type GenerateOptionsApiResponse =
       error: string;
     };
 
+type CreateCheckoutSessionResponse =
+  | {
+      sessionId: string;
+      sessionUrl: string | null;
+    }
+  | {
+      error: string;
+    };
+
+type CheckoutRedirectStripe = {
+  redirectToCheckout?: (options: {
+    sessionId: string;
+  }) => Promise<{ error?: { message?: string } }>;
+};
+
 type FirstStep = {
   time: string;
   action: string;
@@ -46,6 +63,7 @@ type TimelineStep = FirstStep & {
 export default function Step2Decision({
   userInput,
   constraints,
+  paidOptionId,
 }: Step2DecisionProps) {
   const [data, setData] = useState<GeneratedData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -101,10 +119,71 @@ export default function Step2Decision({
     });
   }, [generateOptions]);
 
-  const handleUnlock = (optionId: RouteOption["id"]) => {
-    alert("支付成功，完整路线已解锁。");
-    setUnlocked((current) => ({ ...current, [optionId]: true }));
-    setExpanded(optionId);
+  useEffect(() => {
+    if (!paidOptionId) {
+      return;
+    }
+
+    queueMicrotask(() => {
+      setUnlocked((current) => ({ ...current, [paidOptionId]: true }));
+      setExpanded(paidOptionId);
+    });
+  }, [paidOptionId]);
+
+  const handlePay = async (option: RouteOption) => {
+    try {
+      const stripe = await stripePromise;
+
+      if (!stripe) {
+        throw new Error("Stripe 初始化失败，请检查支付配置");
+      }
+
+      const response = await fetch("/api/create-checkout-session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          optionId: option.id,
+          planName: `${option.title}完整路线`,
+          amount: 299,
+        }),
+      });
+
+      const result = (await response.json()) as CreateCheckoutSessionResponse;
+
+      if (!response.ok || "error" in result) {
+        throw new Error(
+          "error" in result ? result.error : "支付初始化失败，请重试",
+        );
+      }
+
+      const checkoutStripe = stripe as unknown as CheckoutRedirectStripe;
+
+      if (!checkoutStripe.redirectToCheckout) {
+        if (result.sessionUrl) {
+          window.location.assign(result.sessionUrl);
+          return;
+        }
+
+        throw new Error("Stripe Checkout 跳转不可用，请稍后重试");
+      }
+
+      const checkoutResult = await checkoutStripe.redirectToCheckout({
+        sessionId: result.sessionId,
+      });
+
+      if (checkoutResult.error) {
+        throw new Error(checkoutResult.error.message ?? "跳转支付失败，请重试");
+      }
+    } catch (caughtError) {
+      console.error("checkout error:", caughtError);
+      alert(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "支付初始化失败，请稍后重试",
+      );
+    }
   };
 
   if (isLoading) {
@@ -184,7 +263,7 @@ export default function Step2Decision({
         <div className="grid gap-5 lg:grid-cols-2">
           {data.options.map((option) => {
             const isExpanded = expanded === option.id;
-            const isUnlocked = unlocked[option.id];
+            const isUnlocked = unlocked[option.id] || paidOptionId === option.id;
 
             return (
               <motion.article
@@ -267,7 +346,7 @@ export default function Step2Decision({
                             <TimelineCard step={option.firstStep} index={1} />
                             <LockedPreview
                               followingSteps={option.followingSteps}
-                              onUnlock={() => handleUnlock(option.id)}
+                              onUnlock={() => void handlePay(option)}
                             />
                           </>
                         )}
