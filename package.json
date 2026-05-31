@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@stripe/stripe-js": "^9.7.0",
     "framer-motion": "^12.40.0",
     "next": "16.2.6",
     "openai": "^6.39.1",

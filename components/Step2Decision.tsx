@@ -2,7 +2,6 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
-import { stripePromise } from "@/lib/stripe";
 import type { StepConstraints } from "./Step1Capture";
 
 type Step2DecisionProps = {
@@ -43,12 +42,6 @@ type CreateCheckoutSessionResponse =
   | {
       error: string;
     };
-
-type CheckoutRedirectStripe = {
-  redirectToCheckout?: (options: {
-    sessionId: string;
-  }) => Promise<{ error?: { message?: string } }>;
-};
 
 type FirstStep = {
   time: string;
@@ -132,12 +125,6 @@ export default function Step2Decision({
 
   const handlePay = async (option: RouteOption) => {
     try {
-      const stripe = await stripePromise;
-
-      if (!stripe) {
-        throw new Error("Stripe 初始化失败，请检查支付配置");
-      }
-
       const response = await fetch("/api/create-checkout-session", {
         method: "POST",
         headers: {
@@ -158,24 +145,11 @@ export default function Step2Decision({
         );
       }
 
-      const checkoutStripe = stripe as unknown as CheckoutRedirectStripe;
-
-      if (!checkoutStripe.redirectToCheckout) {
-        if (result.sessionUrl) {
-          window.location.assign(result.sessionUrl);
-          return;
-        }
-
-        throw new Error("Stripe Checkout 跳转不可用，请稍后重试");
+      if (!result.sessionUrl) {
+        throw new Error("支付链接创建失败，请稍后重试");
       }
 
-      const checkoutResult = await checkoutStripe.redirectToCheckout({
-        sessionId: result.sessionId,
-      });
-
-      if (checkoutResult.error) {
-        throw new Error(checkoutResult.error.message ?? "跳转支付失败，请重试");
-      }
+      window.location.assign(result.sessionUrl);
     } catch (caughtError) {
       console.error("checkout error:", caughtError);
       alert(
