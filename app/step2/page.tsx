@@ -191,7 +191,7 @@ function Step2PageContent() {
       initialRouteData={initialRouteData}
       paidOptionId={paidOptionId}
       unlockedTimeline={unlockedTimeline}
-      forceUnlockAll={Boolean(routeIdFromUrl && !sessionId)}
+      forceUnlockAll={false}
     />
   );
 }
