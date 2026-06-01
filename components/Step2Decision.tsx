@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { moduleLibrary, type LifeModule } from "@/lib/moduleLibrary";
 import type {
   GeneratedRouteData,
@@ -520,63 +520,7 @@ function ModuleRouteArticle({
   onSave: () => void;
   onComplete: () => void;
 }) {
-  const [showPayGuide, setShowPayGuide] = useState(false);
-  const firstLockedCardRef = useRef<HTMLDivElement | null>(null);
-  const hasUserScrolledRef = useRef(false);
   const hasLockedModules = route.modules.length > 1 && !isUnlocked;
-
-  useEffect(() => {
-    if (!hasLockedModules) {
-      return;
-    }
-
-    hasUserScrolledRef.current = false;
-
-    const timer = window.setTimeout(() => {
-      setShowPayGuide(true);
-    }, 5000);
-
-    const node = firstLockedCardRef.current;
-    const showWhenLockedAreaIsVisible = () => {
-      if (!node) {
-        return;
-      }
-
-      const rect = node.getBoundingClientRect();
-      const isVisible = rect.top < window.innerHeight && rect.bottom > 0;
-
-      if (isVisible) {
-        setShowPayGuide(true);
-      }
-    };
-    const handleScroll = () => {
-      hasUserScrolledRef.current = true;
-      showWhenLockedAreaIsVisible();
-    };
-    const observer =
-      node && "IntersectionObserver" in window
-        ? new IntersectionObserver(
-            ([entry]) => {
-              if (entry?.isIntersecting && hasUserScrolledRef.current) {
-                setShowPayGuide(true);
-              }
-            },
-            { threshold: 0.35 },
-          )
-        : null;
-
-    if (node && observer) {
-      observer.observe(node);
-    }
-
-    window.addEventListener("scroll", handleScroll, { passive: true });
-
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("scroll", handleScroll);
-      observer?.disconnect();
-    };
-  }, [hasLockedModules, route.modules]);
 
   return (
     <motion.article
@@ -602,9 +546,6 @@ function ModuleRouteArticle({
           return (
             <div key={`${route.type}-${selectedModule.moduleId}-${index}`}>
               <ModuleCard
-                refProp={
-                  !isUnlocked && index === 1 ? firstLockedCardRef : undefined
-                }
                 moduleDefinition={moduleDefinition}
                 customContext={selectedModule.customContext}
                 isLocked={!isModuleUnlocked}
@@ -617,42 +558,40 @@ function ModuleRouteArticle({
       </div>
 
       {hasLockedModules ? (
-        <AnimatePresence>
-          {showPayGuide ? (
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 12 }}
-              transition={{ duration: 0.24, ease: "easeOut" }}
-              className="mt-5 rounded-lg border border-[#eadfd4] bg-[#fbf4ec] p-4"
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.24, ease: "easeOut" }}
+          className="mt-5 rounded-lg border border-[#eadfd4] bg-[#fbf4ec] p-4"
+        >
+          <p className="text-sm font-medium text-[#433b34]">
+            后续模块已锁定
+          </p>
+          <p className="mt-1 text-sm leading-6 text-[#655b52]">
+            解锁后会展开所有步骤，也可以成为会员直接查看完整路线。
+          </p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={onUnlock}
+              className="rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
             >
-              <p className="text-sm text-[#655b52]">
-                我已经开始好奇完整路线了，解锁它吗？
+              解锁本次 ($2.99)
+            </button>
+            <div>
+              <button
+                type="button"
+                onClick={onSubscribe}
+                className="w-full rounded-lg border border-[#9b6b55] bg-white/70 px-4 py-3 text-sm font-medium text-[#805743] transition hover:bg-white"
+              >
+                成为会员 ($7.99/月)
+              </button>
+              <p className="mt-2 text-center text-xs text-[#9b6b55]">
+                14天内可退款
               </p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={onUnlock}
-                  className="rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
-                >
-                  解锁本次 ($2.99)
-                </button>
-                <div>
-                  <button
-                    type="button"
-                    onClick={onSubscribe}
-                    className="w-full rounded-lg border border-[#9b6b55] px-4 py-3 text-sm font-medium text-[#805743] transition hover:bg-white"
-                  >
-                    $7.99/月 成为会员
-                  </button>
-                  <p className="mt-2 text-center text-xs text-[#9b6b55]">
-                    14天内可退款
-                  </p>
-                </div>
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+            </div>
+          </div>
+        </motion.div>
       ) : null}
 
       {isUnlocked ? (
@@ -678,13 +617,11 @@ function ModuleRouteArticle({
 }
 
 function ModuleCard({
-  refProp,
   moduleDefinition,
   customContext,
   isLocked,
   isFirst,
 }: {
-  refProp?: React.RefObject<HTMLDivElement | null>;
   moduleDefinition: LifeModule | undefined;
   customContext?: string;
   isLocked: boolean;
@@ -697,14 +634,13 @@ function ModuleCard({
 
   return (
     <div
-      ref={refProp}
       className={`relative overflow-hidden rounded-lg border p-4 transition ${
         isLocked
           ? "border-[#eadfd4] bg-[#fffdfa]"
           : "border-[#d9e8e1] bg-[#fbfffd]"
       }`}
     >
-      <div className={isLocked ? "blur-sm" : ""}>
+      <div className={isLocked ? "blur-md opacity-45" : ""}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-base font-medium text-[#29231f]">
@@ -748,10 +684,15 @@ function ModuleCard({
       </div>
 
       {isLocked ? (
-        <div className="absolute inset-0 flex items-end justify-center bg-white/55 p-4">
-          <p className="w-full rounded-lg border border-[#eadfd4] bg-white/85 px-3 py-2 text-center text-xs font-medium text-[#655b52]">
-            🔒 解锁后可查看完整步骤
-          </p>
+        <div className="absolute inset-0 flex items-center justify-center bg-white/80 p-4 backdrop-blur-[2px]">
+          <div className="rounded-lg border border-[#eadfd4] bg-white px-4 py-3 text-center shadow-sm">
+            <p className="text-2xl" aria-hidden="true">
+              🔒
+            </p>
+            <p className="mt-2 text-sm font-medium text-[#433b34]">
+              解锁后可查看完整步骤
+            </p>
+          </div>
         </div>
       ) : null}
     </div>
