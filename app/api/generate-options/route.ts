@@ -34,6 +34,8 @@ type GeneratedRoutesResponse = {
 };
 
 const moduleIdSet = new Set(moduleLibrary.map((module) => module.id));
+const moduleById = new Map(moduleLibrary.map((module) => [module.id, module]));
+const moduleIdByName = new Map(moduleLibrary.map((module) => [module.name, module.id]));
 const MODULE_CATALOG = moduleLibrary
   .map(
     (module) =>
@@ -221,9 +223,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = parseGeneratedRoutes(content);
+    const data = parseGeneratedRoutes(content, scale);
 
     if (!data) {
+      console.error("AI module route parse error:", content.slice(0, 1200));
       return NextResponse.json(
         { error: "AI 返回格式不正确，请重试" },
         { status: 502 },
@@ -279,100 +282,217 @@ export async function POST(request: Request) {
   }
 }
 
-function parseGeneratedRoutes(content: string): GeneratedRoutesResponse | null {
+function parseGeneratedRoutes(
+  content: string,
+  scale: SupportedScale,
+): GeneratedRoutesResponse | null {
   try {
     const parsed = JSON.parse(content) as unknown;
 
-    if (!isGeneratedRoutesResponse(parsed)) {
+    const normalized = normalizeGeneratedRoutes(parsed, scale);
+
+    if (!normalized) {
       return null;
     }
 
-    return parsed;
+    return normalized;
   } catch {
     return null;
   }
 }
 
-function isGeneratedRoutesResponse(
+function normalizeGeneratedRoutes(
   value: unknown,
-): value is GeneratedRoutesResponse {
-  if (!isRecord(value) || !Array.isArray(value.routes)) {
-    return false;
+  scale: SupportedScale,
+): GeneratedRoutesResponse | null {
+  if (!isRecord(value)) {
+    return null;
   }
 
-  if (value.routes.length !== 2) {
-    return false;
+  const rawRoutes = Array.isArray(value.routes)
+    ? value.routes
+    : Array.isArray(value.options)
+      ? value.options
+      : [];
+
+  const normalizedRoutes = rawRoutes
+    .map((route, index) =>
+      normalizeModuleRoute(
+        route,
+        index === 0 ? "comfort" : "shift",
+        scale,
+      ),
+    )
+    .filter((route): route is ModuleRoute => route !== null);
+
+  const comfortRoute =
+    normalizedRoutes.find((route) => route.type === "comfort") ??
+    normalizeModuleRoute(null, "comfort", scale);
+  const shiftRoute =
+    normalizedRoutes.find((route) => route.type === "shift") ??
+    normalizeModuleRoute(null, "shift", scale);
+
+  if (!comfortRoute || !shiftRoute) {
+    return null;
   }
 
-  const routes = value.routes;
-  const routeTypes = new Set(
-    routes.map((route) => (isRecord(route) ? route.type : null)),
-  );
-
-  return (
-    routeTypes.has("comfort") &&
-    routeTypes.has("shift") &&
-    routes.every(isModuleRoute)
-  );
+  return {
+    routes: [comfortRoute, shiftRoute],
+  };
 }
 
-function isModuleRoute(value: unknown): value is ModuleRoute {
-  if (!isRecord(value)) {
-    return false;
+function normalizeModuleRoute(
+  value: unknown,
+  fallbackType: ModuleRoute["type"],
+  scale: SupportedScale,
+): ModuleRoute | null {
+  const route = isRecord(value) ? value : {};
+  const routeType =
+    route.type === "comfort" || route.type === "shift"
+      ? route.type
+      : fallbackType;
+  const rawModules = Array.isArray(route.modules) ? route.modules : [];
+  const fallbackModuleIds = getFallbackModuleIds(scale, routeType);
+  const normalizedModules = rawModules
+    .map(normalizeSelectedModule)
+    .filter((module): module is ModuleRoute["modules"][number] => module !== null);
+  const usedModuleIds = new Set(normalizedModules.map((module) => module.moduleId));
+
+  for (const moduleId of fallbackModuleIds) {
+    if (normalizedModules.length >= 3) {
+      break;
+    }
+
+    if (!usedModuleIds.has(moduleId)) {
+      normalizedModules.push({ moduleId });
+      usedModuleIds.add(moduleId);
+    }
   }
 
-  if (
-    typeof value.intro !== "string" ||
-    !Array.isArray(value.modules) ||
-    !Array.isArray(value.transitions) ||
-    typeof value.totalDuration !== "number" ||
-    (value.type !== "comfort" && value.type !== "shift")
-  ) {
-    return false;
+  if (normalizedModules.length === 0) {
+    return null;
   }
 
-  if (value.modules.length < 3 || value.modules.length > 5) {
-    return false;
-  }
-
-  if (value.transitions.length !== value.modules.length - 1) {
-    return false;
-  }
-
-  if (!value.modules.every(isSelectedModule)) {
-    return false;
-  }
-
-  if (!value.transitions.every((transition) => typeof transition === "string")) {
-    return false;
-  }
-
-  const calculatedDuration = value.modules.reduce((total, selectedModule) => {
-    const moduleDefinition = moduleLibrary.find(
-      (module) => module.id === selectedModule.moduleId,
-    );
+  const modules = normalizedModules.slice(0, 5);
+  const rawTransitions = Array.isArray(route.transitions) ? route.transitions : [];
+  const transitions = normalizeTransitions(rawTransitions, modules);
+  const totalDuration = modules.reduce((total, selectedModule) => {
+    const moduleDefinition = moduleById.get(selectedModule.moduleId);
 
     return total + (moduleDefinition?.duration ?? 0);
   }, 0);
 
-  return calculatedDuration === value.totalDuration;
+  return {
+    intro: normalizeIntro(route.intro, routeType),
+    modules,
+    transitions,
+    totalDuration,
+    type: routeType,
+  };
 }
 
-function isSelectedModule(
+function normalizeSelectedModule(
   value: unknown,
-): value is ModuleRoute["modules"][number] {
-  if (!isRecord(value) || typeof value.moduleId !== "string") {
-    return false;
+): ModuleRoute["modules"][number] | null {
+  if (!isRecord(value)) {
+    if (typeof value === "string") {
+      const moduleId = resolveModuleId(value);
+
+      return moduleId ? { moduleId } : null;
+    }
+
+    return null;
   }
 
-  if (!moduleIdSet.has(value.moduleId)) {
-    return false;
+  const rawModuleId =
+    typeof value.moduleId === "string"
+      ? value.moduleId
+      : typeof value.id === "string"
+        ? value.id
+        : typeof value.name === "string"
+          ? value.name
+          : "";
+  const moduleId = resolveModuleId(rawModuleId);
+
+  if (!moduleId) {
+    return null;
   }
 
-  return (
-    value.customContext === undefined ||
-    typeof value.customContext === "string"
+  return {
+    moduleId,
+    ...(typeof value.customContext === "string" && value.customContext.trim()
+      ? { customContext: value.customContext.trim() }
+      : {}),
+  };
+}
+
+function resolveModuleId(value: string) {
+  const normalizedValue = value.trim();
+
+  if (moduleIdSet.has(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  const byName = moduleIdByName.get(normalizedValue);
+
+  if (byName) {
+    return byName;
+  }
+
+  const fuzzyModule = moduleLibrary.find(
+    (module) =>
+      normalizedValue.includes(module.name) ||
+      module.name.includes(normalizedValue),
   );
+
+  return fuzzyModule?.id ?? null;
+}
+
+function normalizeTransitions(
+  rawTransitions: unknown[],
+  modules: ModuleRoute["modules"],
+) {
+  const transitions = rawTransitions
+    .filter((transition): transition is string => typeof transition === "string")
+    .map((transition) => transition.trim())
+    .filter(Boolean)
+    .slice(0, Math.max(0, modules.length - 1));
+
+  while (transitions.length < modules.length - 1) {
+    const nextModule = moduleById.get(modules[transitions.length + 1].moduleId);
+    transitions.push(`然后转到${nextModule?.name ?? "下一件事"}`);
+  }
+
+  return transitions;
+}
+
+function normalizeIntro(value: unknown, type: ModuleRoute["type"]) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim().slice(0, 18);
+  }
+
+  return type === "comfort" ? "先从简单处开始" : "轻轻换一个方向";
+}
+
+function getFallbackModuleIds(
+  scale: SupportedScale,
+  type: ModuleRoute["type"],
+) {
+  if (scale === "meal") {
+    return type === "comfort"
+      ? ["mod_warm_milk", "mod_simple_noodle", "mod_tea_and_snack"]
+      : ["mod_grocery_walk", "mod_one_pan_dinner", "mod_desk_clear"];
+  }
+
+  if (scale === "weekend") {
+    return type === "comfort"
+      ? ["mod_bed_reset", "mod_park_loop", "mod_three_line_journal"]
+      : ["mod_grocery_errand", "mod_light_one_corner", "mod_tomorrow_note"];
+  }
+
+  return type === "comfort"
+    ? ["mod_drink_water_reset", "mod_hot_bath", "mod_three_line_journal"]
+    : ["mod_one_block_walk", "mod_tea_station", "mod_sleep_boundary"];
 }
 
 function buildTranslation(routes: [ModuleRoute, ModuleRoute]) {
