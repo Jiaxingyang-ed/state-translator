@@ -77,14 +77,11 @@ export async function GET(request: Request) {
       );
     }
 
-    const unlockedTimeline =
-      route.options.find((option) => option.id === optionId)?.timeline ?? null;
-
     return NextResponse.json({
       paid: true,
       route,
       paidOptionId: optionId,
-      unlockedTimeline,
+      unlockedTimeline: null,
     });
   } catch (error) {
     console.error("verify-payment error:", error);
@@ -97,5 +94,10 @@ export async function GET(request: Request) {
 }
 
 function normalizeOptionId(value: string | undefined): OptionId | null {
-  return value === "A" || value === "B" ? value : null;
+  return value === "A" ||
+    value === "B" ||
+    value === "comfort" ||
+    value === "shift"
+    ? value
+    : null;
 }

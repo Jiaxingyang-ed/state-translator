@@ -303,7 +303,7 @@ export default function Step2Decision({
         );
       }
 
-      alert("已保存到我的行程。");
+      alert("已保存到我的行程");
     } catch (caughtError) {
       console.error("save trip error:", caughtError);
       alert(
@@ -364,6 +364,7 @@ export default function Step2Decision({
         optionId: feedbackOptionId,
         rating,
         comment,
+        completion_note: comment,
         anonymousId,
       }),
     });
@@ -453,12 +454,16 @@ export default function Step2Decision({
         <div className="grid gap-5 lg:grid-cols-2">
           {moduleRouteData.options.map((route) => {
             const optionId = getOptionIdForRoute(route);
+            const legacyOptionId = getLegacyOptionIdForRoute(route);
             const isRouteUnlocked =
               forceUnlockAll ||
               isMember ||
               unlocked[optionId] ||
+              unlocked[legacyOptionId] ||
               activePaidOptionId === optionId ||
-              moduleRouteData.unlockedOptionIds.includes(optionId);
+              activePaidOptionId === legacyOptionId ||
+              moduleRouteData.unlockedOptionIds.includes(optionId) ||
+              moduleRouteData.unlockedOptionIds.includes(legacyOptionId);
 
             return (
               <ModuleRouteArticle
@@ -630,7 +635,7 @@ function ModuleRouteArticle({
                   onClick={onUnlock}
                   className="rounded-lg bg-[#2e4d48] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
                 >
-                  $2.99 解锁本次
+                  解锁本次 ($2.99)
                 </button>
                 <div>
                   <button
@@ -781,9 +786,12 @@ function FeedbackModal({
 
     try {
       await onSubmit(rating, comment);
-      alert("谢谢反馈");
       setSubmitted(true);
       setComment("");
+      window.setTimeout(() => {
+        setSubmitted(false);
+        onClose();
+      }, 1000);
     } catch (error) {
       console.error("feedback submit error:", error);
       alert(error instanceof Error ? error.message : "提交失败，请稍后重试");
@@ -918,6 +926,10 @@ function isSelectedModule(value: unknown): value is SelectedModule {
 }
 
 function getOptionIdForRoute(route: ModuleRoute): OptionId {
+  return route.type;
+}
+
+function getLegacyOptionIdForRoute(route: ModuleRoute): OptionId {
   return route.type === "comfort" ? "A" : "B";
 }
 
@@ -947,10 +959,13 @@ function getOrCreateAnonymousId() {
   const storageKey = "anonymous_id";
   const legacyStorageKey = "state_translator_anonymous_id";
   const existingId =
-    localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey);
+    sessionStorage.getItem(storageKey) ??
+    localStorage.getItem(storageKey) ??
+    localStorage.getItem(legacyStorageKey);
 
   if (existingId) {
     localStorage.setItem(storageKey, existingId);
+    sessionStorage.setItem(storageKey, existingId);
     return existingId;
   }
 
@@ -961,6 +976,7 @@ function getOrCreateAnonymousId() {
 
   localStorage.setItem(storageKey, newId);
   localStorage.setItem(legacyStorageKey, newId);
+  sessionStorage.setItem(storageKey, newId);
 
   return newId;
 }

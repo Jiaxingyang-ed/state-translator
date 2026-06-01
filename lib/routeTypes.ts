@@ -1,4 +1,4 @@
-export type OptionId = "A" | "B";
+export type OptionId = "A" | "B" | "comfort" | "shift";
 
 export type RouteScale =
   | "auto"

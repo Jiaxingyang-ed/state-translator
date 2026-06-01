@@ -145,5 +145,10 @@ function getSubscriptionPeriodEnd(subscription: Stripe.Subscription) {
 }
 
 function normalizeOptionId(value: string | undefined): OptionId | null {
-  return value === "A" || value === "B" ? value : null;
+  return value === "A" ||
+    value === "B" ||
+    value === "comfort" ||
+    value === "shift"
+    ? value
+    : null;
 }

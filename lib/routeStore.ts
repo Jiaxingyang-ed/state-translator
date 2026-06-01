@@ -66,7 +66,12 @@ export async function getStoredRoute(
 }
 
 function normalizeOptionId(value: string): OptionId | null {
-  return value === "A" || value === "B" ? value : null;
+  return value === "A" ||
+    value === "B" ||
+    value === "comfort" ||
+    value === "shift"
+    ? value
+    : null;
 }
 
 function normalizeScale(value: string | null | undefined): Exclude<RouteScale, "auto"> {

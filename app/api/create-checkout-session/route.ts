@@ -34,9 +34,9 @@ export async function POST(request: Request) {
       typeof body.planName === "string" ? body.planName.trim() : "";
     const amount = typeof body.amount === "number" ? body.amount : 0;
 
-    if (!optionId || !["A", "B"].includes(optionId)) {
+    if (!optionId || !["A", "B", "comfort", "shift"].includes(optionId)) {
       return NextResponse.json(
-        { error: "optionId 必须是 A 或 B" },
+        { error: "optionId 必须是 comfort、shift、A 或 B" },
         { status: 400 },
       );
     }

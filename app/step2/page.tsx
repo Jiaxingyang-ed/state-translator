@@ -240,7 +240,12 @@ function LoadingState({ message }: { message: string }) {
 }
 
 function normalizeOptionId(value: string | null): OptionId | null {
-  return value === "A" || value === "B" ? value : null;
+  return value === "A" ||
+    value === "B" ||
+    value === "comfort" ||
+    value === "shift"
+    ? value
+    : null;
 }
 
 function normalizeRouteScale(value: string | null): RouteScale {
