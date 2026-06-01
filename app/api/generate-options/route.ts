@@ -1,7 +1,10 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { moduleLibrary } from "@/lib/moduleLibrary";
 import { createSupabaseServerClient } from "@/lib/supabaseClient";
-import type { GeneratedRouteData, OptionId, RouteScale } from "@/lib/routeTypes";
+import type { GeneratedRouteData, RouteScale } from "@/lib/routeTypes";
+
+type SupportedScale = Extract<RouteScale, "tonight" | "weekend" | "meal">;
 
 type RequestBody = {
   inputText?: unknown;
@@ -11,161 +14,120 @@ type RequestBody = {
   constraints?: {
     time?: unknown;
     budget?: unknown;
+    social?: unknown;
   };
 };
 
-type GeneratedFirstStep = {
-  time: string;
-  action: string;
-  environment: string;
-  surprise: string;
+type ModuleRoute = {
+  intro: string;
+  modules: Array<{
+    moduleId: string;
+    customContext?: string;
+  }>;
+  transitions: string[];
+  totalDuration: number;
+  type: "comfort" | "shift";
 };
 
-type GeneratedStep = {
-  time: string;
-  action: string;
-  environment: string;
-  tip?: string;
+type GeneratedRoutesResponse = {
+  routes: [ModuleRoute, ModuleRoute];
 };
 
-type GeneratedOption = {
-  id: OptionId;
-  title: string;
-  reason: string;
-  preview: string;
-  firstStep: GeneratedFirstStep;
-  followingSteps: string[];
-  timeline: GeneratedStep[];
-};
+const moduleIdSet = new Set(moduleLibrary.map((module) => module.id));
+const MODULE_CATALOG = moduleLibrary
+  .map(
+    (module) =>
+      `${module.id} | ${module.name} | ${module.category} | ${module.duration}min | ${module.energyLevel}`,
+  )
+  .join("\n");
 
-type GeneratedOptionsResponse = {
-  detected_scale?: Exclude<RouteScale, "auto">;
-  translation: string;
-  options: [GeneratedOption, GeneratedOption];
-};
+const BASE_PROMPT = `
+你是 state-translator 的路线编排器。
+用户会输入一个今晚/周末/一顿饭相关的模糊状态，以及时间、预算、社交约束。
 
-const BASE_PERSONA_PROMPT = `
-你是一个“状态翻译器”产品中的路线生成器。你的任务是把用户说不清的当下状态，翻译成两条具体、可执行、低压力的生活路线。
-你的语气像一个敏感、克制、会观察现实细节的朋友：先反射式倾听，再给出具体安排。
-不要做医疗诊断，不要制造焦虑，不要输出心理鸡汤，不要给宏大空泛建议。
-每条路线都要照顾用户当下精力，动作要真实可做，预算和时间约束必须优先。
+你的任务不是生成具体步骤。
+具体步骤已经存在于模块库中，你只能从模块库中选择模块、排序，并为模块之间写过渡。
+
+你要输出两条路线：
+- comfort：顺着此刻，让用户先稳定下来。
+- shift：轻轻掰一下，让用户做一点低压力的对冲。
+
+路线要有节奏感：起步要容易，中段要有一点变化，收尾要能落地。
+不要诊断用户，不要使用治疗、疗愈、创伤等词。
+不要输出文艺散文，不要写模块步骤。
 `.trim();
 
-const SCALE_INSTRUCTIONS: Record<Exclude<RouteScale, "auto">, string> = {
+const SCALE_PROMPTS: Record<SupportedScale, string> = {
   tonight: `
-尺度：今晚。
-生成单次出行、居家体验或短时生活路线。timeline 必须是 3-5 步，适合从今天或今晚开始。
-每一步用具体时间点或时间段表达，例如“傍晚6点左右”“睡前20分钟”。
+scale = tonight。
+路线应该适合今晚开始，优先选择 3-5 个总时长不夸张的模块。
+如果 time 是“1小时”，totalDuration 尽量不超过 60。
+如果 social 是 Alone，避免强社交模块；Someone 可以包含一条轻联系；Open 可以保留可约人的余地。
 `.trim(),
   weekend: `
-尺度：周末。
-生成 2 天的周末路线。timeline 必须是 4-5 步，尽量覆盖第1天上午/下午/晚上和第2天上午/下午。
-time 字段要明确写出“第1天上午”“第1天下午”“第2天上午”等。
-`.trim(),
-  travel: `
-尺度：旅行。
-生成 2-3 天的轻旅行方案，包含交通方式、主要体验和节奏安排，但不要指定具体酒店。
-timeline 必须是 4-5 步，time 字段要明确写出“第1天”“第2天”“第3天”等，environment 写交通或场景。
+scale = weekend。
+路线应该像一个轻量周末安排，可以选择 4-5 个模块。
+模块顺序要能跨半天到两天展开，但不要安排复杂旅行。
+如果预算低，优先选择 space、mind、movement 中的低成本模块。
 `.trim(),
   meal: `
-尺度：一顿饭。
-生成完整菜谱或吃饭方案。必须包含超市可买到的食材、烹饪时间、步骤和小贴士。
-firstStep.environment 必须以“食材：”开头列出食材，用顿号分隔。timeline 是 3-5 个烹饪或用餐步骤。
-`.trim(),
-  book: `
-尺度：一本书。
-推荐一本符合用户状态的书。title 尽量使用书名，可以超过 6 个字但要简短。
-firstStep.environment 必须包含“作者：作者名”。preview 写一句具体推荐理由，timeline 写 3-5 个阅读建议、第一章进入方式或读后行动。
-`.trim(),
-  corner: `
-尺度：一个角落。
-设计一个家中或城市里的角落改造/布置方案。包含物品清单、步骤和氛围描述。
-firstStep.environment 必须以“物品：”开头列出物品，用顿号分隔。timeline 是 3-5 个布置、整理或体验步骤。
+scale = meal。
+路线应该围绕一顿饭展开，必须至少选择 2 个 food 模块。
+可以搭配一个 space 模块作为餐桌或厨房准备，也可以用一个 mind 模块收尾。
+不要生成菜谱步骤，只选择已有 food 模块。
 `.trim(),
 };
 
-const OUTPUT_FORMAT_PROMPT = `
-必须只返回合法 JSON，不要 Markdown，不要代码块，不要解释文字。
+const OUTPUT_PROMPT = `
+可用模块如下，每行格式为：moduleId | name | category | duration | energyLevel
+${MODULE_CATALOG}
+
+严格只返回 JSON，不要 Markdown，不要代码块，不要额外解释。
 
 JSON 结构必须严格如下：
 {
-  "detected_scale": "tonight" | "weekend" | "travel" | "meal" | "book" | "corner",
-  "translation": string,
-  "options": [
+  "routes": [
     {
-      "id": "A",
-      "title": string,
-      "reason": string,
-      "preview": string,
-      "firstStep": {
-        "time": string,
-        "action": string,
-        "environment": string,
-        "surprise": string
-      },
-      "followingSteps": string[],
-      "timeline": [
+      "intro": string,
+      "modules": [
         {
-          "time": string,
-          "action": string,
-          "environment": string,
-          "tip": string
+          "moduleId": string,
+          "customContext": string
         }
-      ]
+      ],
+      "transitions": string[],
+      "totalDuration": number,
+      "type": "comfort"
     },
     {
-      "id": "B",
-      "title": string,
-      "reason": string,
-      "preview": string,
-      "firstStep": {
-        "time": string,
-        "action": string,
-        "environment": string,
-        "surprise": string
-      },
-      "followingSteps": string[],
-      "timeline": [
+      "intro": string,
+      "modules": [
         {
-          "time": string,
-          "action": string,
-          "environment": string,
-          "tip": string
+          "moduleId": string,
+          "customContext": string
         }
-      ]
+      ],
+      "transitions": string[],
+      "totalDuration": number,
+      "type": "shift"
     }
   ]
 }
 
-输出约束：
-- translation 是核心翻译句，20 个中文字符以内。
-- options 必须恰好 2 个，A 和 B 各一个。
-- A 必须是安抚型：顺应状态、降低刺激、帮助用户恢复一点稳定感。
-- B 必须是微突破型：轻度对冲当前状态，但不能要求高能量、高社交或高消费。
-- title 通常 6 个中文字符以内；如果尺度是“一本书”，title 可以使用书名但仍要简洁。
-- reason 20 个中文字符左右，说明为什么适配。
-- preview 是一句路线预览，必须具体。
-- firstStep 必须是免费可试的第一步，马上能做。
-- firstStep.surprise 必须是一个具体、可感知的微小惊喜，描述用户执行第一步时可能注意到的细节；必须落在真实生活场景中，可看见、听见、闻到或触摸到，避免抽象情绪词。例如：“第二个路口的便利店冰柜会有一排蓝色小灯”。
-- followingSteps 必须是 2-3 条字符串，描述后续锁定步骤的方向。
-- followingSteps 每条尽量以前 5-10 个字形成清晰关键词，方便前端截取成模糊预览标题。
-- timeline 必须是 3-5 步，包含 firstStep 对应内容或自然承接它。
-- 每一步都要具体、可执行，包含时间、动作、环境；tip 可短。
-- 严格遵守用户给出的时间和预算约束。
-- 避免文艺空泛、心理鸡汤、宏大建议、医疗诊断。
+硬性要求：
+- routes 必须恰好 2 条，一条 type 为 comfort，一条 type 为 shift。
+- intro 是一句话定调，不超过 15 个中文字符。
+- 每条路线选择 3-5 个模块。
+- moduleId 必须来自上面的模块库，不允许编造。
+- customContext 可选，用来说明这个模块如何贴合用户当前状态；不要写步骤。
+- transitions 长度必须等于 modules.length - 1。
+- transitions 每条不超过 24 个中文字符，要简短、具体、有画面感。
+- totalDuration 必须等于所选模块 duration 之和。
+- 不要生成 instructions、timeline、firstStep 或任何具体操作步骤。
 `.trim();
 
-function buildSystemPrompt(scale: RouteScale) {
-  const scalePrompt =
-    scale === "auto"
-      ? `
-尺度：自动推断。
-请根据用户输入在 tonight、weekend、travel、meal、book、corner 中选择最合适的尺度，并在顶层返回 detected_scale。
-如果用户明显想要短时安排，选 tonight；想逃离或修复一个周末，选 weekend；涉及城市/目的地/离开原处，选 travel；涉及吃什么或做饭，选 meal；涉及阅读、精神陪伴，选 book；涉及房间、桌面、窗边、街角等空间，选 corner。
-`.trim()
-      : SCALE_INSTRUCTIONS[scale];
-
-  return [BASE_PERSONA_PROMPT, scalePrompt, OUTPUT_FORMAT_PROMPT].join("\n\n");
+function buildSystemPrompt(scale: SupportedScale) {
+  return [BASE_PROMPT, SCALE_PROMPTS[scale], OUTPUT_PROMPT].join("\n\n");
 }
 
 export async function POST(request: Request) {
@@ -177,14 +139,18 @@ export async function POST(request: Request) {
       typeof body.anonymousId === "string" ? body.anonymousId.trim() : "";
     const time =
       typeof body.constraints?.time === "string"
-        ? body.constraints.time
+        ? body.constraints.time.trim()
         : "";
     const budget =
       typeof body.constraints?.budget === "string"
-        ? body.constraints.budget
+        ? body.constraints.budget.trim()
         : "";
+    const social =
+      typeof body.constraints?.social === "string"
+        ? body.constraints.social.trim()
+        : "Alone";
     const regenerate = body.regenerate === true;
-    const requestedScale = normalizeRequestedScale(body.scale);
+    const scale = normalizeScale(body.scale);
 
     if (!inputText) {
       return NextResponse.json(
@@ -227,23 +193,23 @@ export async function POST(request: Request) {
       messages: [
         {
           role: "system",
-          content: buildSystemPrompt(requestedScale),
+          content: buildSystemPrompt(scale),
         },
         {
           role: "user",
           content: JSON.stringify({
             inputText,
-            constraints: { time, budget },
-            scale: requestedScale,
+            constraints: { time, budget, social },
+            scale,
             regenerate,
             instruction: regenerate
-              ? "这是用户点击“换两个看看”的重新生成请求，请避开过于相似的路线角度。"
+              ? "这是用户点击“换两个看看”的重新生成请求，请选择不同模块组合，避免与上一组过于相似。"
               : undefined,
           }),
         },
       ],
       response_format: { type: "json_object" },
-      temperature: 0.8,
+      temperature: 0.7,
     });
 
     const content = completion.choices[0]?.message?.content;
@@ -255,7 +221,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = parseGeneratedOptions(content);
+    const data = parseGeneratedRoutes(content);
 
     if (!data) {
       return NextResponse.json(
@@ -264,34 +230,29 @@ export async function POST(request: Request) {
       );
     }
 
-    if (requestedScale === "auto" && !data.detected_scale) {
-      return NextResponse.json(
-        { error: "AI 未返回 detected_scale，请重试" },
-        { status: 502 },
-      );
-    }
-
-    const resolvedScale =
-      requestedScale === "auto"
-        ? normalizeResolvedScale(data.detected_scale)
-        : requestedScale;
-
     const supabase = createSupabaseServerClient();
     const { data: insertedRoute, error: insertError } = await supabase
       .from("generated_routes")
       .insert({
         anonymous_id: anonymousId,
         user_input: inputText,
-        constraints: { time, budget },
-        scale: resolvedScale,
-        translation: data.translation,
-        options: data.options,
+        constraints: { time, budget, social },
+        scale,
+        translation: buildTranslation(data.routes),
+        options: data.routes,
       })
       .select("id")
       .single();
 
     if (insertError || !insertedRoute) {
       console.error("generated_routes insert error:", insertError);
+
+      if (isMissingScaleColumnError(insertError)) {
+        return NextResponse.json(
+          { error: "数据库缺少 scale 字段，请先执行 Supabase 迁移" },
+          { status: 500 },
+        );
+      }
 
       return NextResponse.json(
         { error: "保存生成路线失败，请稍后重试" },
@@ -301,9 +262,9 @@ export async function POST(request: Request) {
 
     const responseData: GeneratedRouteData = {
       routeId: insertedRoute.id as string,
-      scale: resolvedScale,
-      translation: data.translation,
-      options: data.options,
+      scale,
+      translation: buildTranslation(data.routes),
+      options: data.routes as unknown as GeneratedRouteData["options"],
       unlockedOptionIds: [],
     };
 
@@ -318,11 +279,11 @@ export async function POST(request: Request) {
   }
 }
 
-function parseGeneratedOptions(content: string): GeneratedOptionsResponse | null {
+function parseGeneratedRoutes(content: string): GeneratedRoutesResponse | null {
   try {
     const parsed = JSON.parse(content) as unknown;
 
-    if (!isGeneratedOptionsResponse(parsed)) {
+    if (!isGeneratedRoutesResponse(parsed)) {
       return null;
     }
 
@@ -332,113 +293,121 @@ function parseGeneratedOptions(content: string): GeneratedOptionsResponse | null
   }
 }
 
-function isGeneratedOptionsResponse(
+function isGeneratedRoutesResponse(
   value: unknown,
-): value is GeneratedOptionsResponse {
-  if (!isRecord(value) || typeof value.translation !== "string") {
+): value is GeneratedRoutesResponse {
+  if (!isRecord(value) || !Array.isArray(value.routes)) {
+    return false;
+  }
+
+  if (value.routes.length !== 2) {
+    return false;
+  }
+
+  const routes = value.routes;
+  const routeTypes = new Set(
+    routes.map((route) => (isRecord(route) ? route.type : null)),
+  );
+
+  return (
+    routeTypes.has("comfort") &&
+    routeTypes.has("shift") &&
+    routes.every(isModuleRoute)
+  );
+}
+
+function isModuleRoute(value: unknown): value is ModuleRoute {
+  if (!isRecord(value)) {
     return false;
   }
 
   if (
-    value.detected_scale !== undefined &&
-    !isResolvedRouteScale(value.detected_scale)
+    typeof value.intro !== "string" ||
+    !Array.isArray(value.modules) ||
+    !Array.isArray(value.transitions) ||
+    typeof value.totalDuration !== "number" ||
+    (value.type !== "comfort" && value.type !== "shift")
   ) {
     return false;
   }
 
-  if (!Array.isArray(value.options) || value.options.length !== 2) {
+  if (value.modules.length < 3 || value.modules.length > 5) {
     return false;
   }
 
-  return (
-    isGeneratedOption(value.options[0], "A") &&
-    isGeneratedOption(value.options[1], "B")
-  );
+  if (value.transitions.length !== value.modules.length - 1) {
+    return false;
+  }
+
+  if (!value.modules.every(isSelectedModule)) {
+    return false;
+  }
+
+  if (!value.transitions.every((transition) => typeof transition === "string")) {
+    return false;
+  }
+
+  const calculatedDuration = value.modules.reduce((total, selectedModule) => {
+    const moduleDefinition = moduleLibrary.find(
+      (module) => module.id === selectedModule.moduleId,
+    );
+
+    return total + (moduleDefinition?.duration ?? 0);
+  }, 0);
+
+  return calculatedDuration === value.totalDuration;
 }
 
-function isGeneratedOption(
+function isSelectedModule(
   value: unknown,
-  expectedId: "A" | "B",
-): value is GeneratedOption {
-  if (!isRecord(value) || value.id !== expectedId) {
+): value is ModuleRoute["modules"][number] {
+  if (!isRecord(value) || typeof value.moduleId !== "string") {
+    return false;
+  }
+
+  if (!moduleIdSet.has(value.moduleId)) {
     return false;
   }
 
   return (
-    typeof value.title === "string" &&
-    typeof value.reason === "string" &&
-    typeof value.preview === "string" &&
-    isFirstStep(value.firstStep) &&
-    Array.isArray(value.followingSteps) &&
-    value.followingSteps.length >= 2 &&
-    value.followingSteps.length <= 3 &&
-    value.followingSteps.every((step) => typeof step === "string") &&
-    Array.isArray(value.timeline) &&
-    value.timeline.length >= 3 &&
-    value.timeline.length <= 5 &&
-    value.timeline.every(isStep)
+    value.customContext === undefined ||
+    typeof value.customContext === "string"
   );
 }
 
-function isFirstStep(value: unknown): value is GeneratedFirstStep {
-  return (
-    isStepWithoutTip(value) &&
-    typeof (value as Record<string, unknown>).surprise === "string"
-  );
+function buildTranslation(routes: [ModuleRoute, ModuleRoute]) {
+  const comfortRoute = routes.find((route) => route.type === "comfort");
+
+  return comfortRoute?.intro ?? routes[0].intro;
 }
 
-function isStep(value: unknown): value is GeneratedStep {
-  if (!isStepWithoutTip(value)) {
-    return false;
+function normalizeScale(value: unknown): SupportedScale {
+  if (value === "weekend" || value === "meal") {
+    return value;
   }
 
-  const step = value as Record<string, unknown>;
-
-  return step.tip === undefined || typeof step.tip === "string";
-}
-
-function isStepWithoutTip(value: unknown): value is Omit<GeneratedStep, "tip"> {
-  return (
-    isRecord(value) &&
-    typeof value.time === "string" &&
-    typeof value.action === "string" &&
-    typeof value.environment === "string"
-  );
+  return "tonight";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function normalizeRequestedScale(value: unknown): RouteScale {
-  return typeof value === "string" && isRouteScale(value) ? value : "tonight";
-}
+function isMissingScaleColumnError(error: unknown) {
+  if (!isRecord(error)) {
+    return false;
+  }
 
-function normalizeResolvedScale(
-  value: GeneratedOptionsResponse["detected_scale"],
-): Exclude<RouteScale, "auto"> {
-  return value && isResolvedRouteScale(value) ? value : "tonight";
-}
+  const message =
+    typeof error.message === "string" ? error.message.toLowerCase() : "";
+  const details =
+    typeof error.details === "string" ? error.details.toLowerCase() : "";
 
-function isRouteScale(value: string): value is RouteScale {
   return (
-    value === "auto" ||
-    value === "tonight" ||
-    value === "weekend" ||
-    value === "travel" ||
-    value === "meal" ||
-    value === "book" ||
-    value === "corner"
-  );
-}
-
-function isResolvedRouteScale(value: unknown): value is Exclude<RouteScale, "auto"> {
-  return (
-    value === "tonight" ||
-    value === "weekend" ||
-    value === "travel" ||
-    value === "meal" ||
-    value === "book" ||
-    value === "corner"
+    (message.includes("scale") || details.includes("scale")) &&
+    (message.includes("column") ||
+      details.includes("column") ||
+      message.includes("schema cache") ||
+      details.includes("schema cache"))
   );
 }
