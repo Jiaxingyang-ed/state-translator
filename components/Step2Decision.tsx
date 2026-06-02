@@ -1397,11 +1397,20 @@ function FeedbackModal({
   const [comment, setComment] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const ratingToEnum = (ratingLabel: string): string => {
+    const ratingMap: Record<string, string> = {
+      "有用": "useful",
+      "一般": "so_so",
+      "不太适合": "not_for_me",
+    };
+    return ratingMap[ratingLabel] || ratingLabel;
+  };
+
   const handleSubmit = async () => {
     setIsSubmitting(true);
 
     try {
-      await onSubmit(rating, comment);
+      await onSubmit(ratingToEnum(rating), comment);
       setSubmitted(true);
       setComment("");
       window.setTimeout(() => {
