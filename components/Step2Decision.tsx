@@ -126,6 +126,21 @@ type UserStatusResponse =
       error: string;
     };
 
+type SocialProofData = {
+  totalUsers: number;
+  recentCompletions: Array<{
+    anonymousIdPrefix: string;
+    moduleName: string;
+    completedAt: string | null;
+  }>;
+};
+
+type SocialProofResponse =
+  | SocialProofData
+  | {
+      error: string;
+    };
+
 const moduleById = new Map(
   moduleLibrary.map((lifeModule) => [lifeModule.id, lifeModule]),
 );
@@ -167,6 +182,7 @@ export default function Step2Decision({
   const [feedbackPromptedKey, setFeedbackPromptedKey] = useState<string | null>(
     null,
   );
+  const [socialProof, setSocialProof] = useState<SocialProofData | null>(null);
 
   const resetLocalPlanState = useCallback(() => {
     setCompletedModules({});
@@ -198,6 +214,29 @@ export default function Step2Decision({
       };
 
       void fetchUserStatus();
+    });
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      const fetchSocialProof = async () => {
+        try {
+          const response = await fetch("/api/social-proof");
+          const result = (await response.json()) as SocialProofResponse;
+
+          if (!response.ok || "error" in result) {
+            return;
+          }
+
+          if (result.totalUsers > 0 || result.recentCompletions.length > 0) {
+            setSocialProof(result);
+          }
+        } catch (caughtError) {
+          console.error("social proof error:", caughtError);
+        }
+      };
+
+      void fetchSocialProof();
     });
   }, []);
 
@@ -523,6 +562,49 @@ export default function Step2Decision({
     if (!response.ok || "error" in result) {
       throw new Error("error" in result ? result.error : "提交失败，请稍后重试");
     }
+
+    await recordCompletedActions(rating);
+  };
+
+  const recordCompletedActions = async (rating: string) => {
+    if (!data?.routeId || !activePlan) {
+      return;
+    }
+
+    const optionId = getOptionIdForPlan(activePlan);
+    const anonymousId = getOrCreateAnonymousId();
+    const modulesToRecord = getCompletedRenderableModules(
+      activePlan,
+      completedModules,
+    );
+
+    for (const completedModule of modulesToRecord) {
+      const response = await fetch("/api/record-completion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-anonymous-id": anonymousId,
+        },
+        body: JSON.stringify({
+          anonymousId,
+          routeId: data.routeId,
+          optionId,
+          moduleId: completedModule.module.moduleId,
+          moduleName: completedModule.module.name,
+          category: completedModule.module.category,
+          rating,
+          feedbackEmoji: getFeedbackEmoji(rating),
+        }),
+      });
+
+      if (!response.ok) {
+        const result = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+
+        throw new Error(result?.error ?? "记录完成状态失败，请稍后重试");
+      }
+    }
   };
 
   if (isLoading) {
@@ -646,6 +728,8 @@ export default function Step2Decision({
             )}
           </motion.section>
         </AnimatePresence>
+
+        <SocialProofPanel data={socialProof} />
       </div>
 
       {paidRelevant ? (
@@ -1241,6 +1325,42 @@ function BottomActionBar({
   );
 }
 
+function SocialProofPanel({ data }: { data: SocialProofData | null }) {
+  if (!data || (data.totalUsers === 0 && data.recentCompletions.length === 0)) {
+    return null;
+  }
+
+  return (
+    <aside className="mt-6 rounded-lg border border-[#e8ded2] bg-white/80 p-5 shadow-sm">
+      {data.totalUsers > 0 ? (
+        <p className="text-sm font-medium text-[#433b34]">
+          已有 {data.totalUsers} 人完成了今晚计划
+        </p>
+      ) : null}
+
+      {data.recentCompletions.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {data.recentCompletions.slice(0, 3).map((completion) => (
+            <li
+              key={`${completion.anonymousIdPrefix}-${completion.moduleName}-${completion.completedAt}`}
+              className="flex min-h-11 items-center justify-between gap-3 rounded-lg bg-[#fbfaf7] px-4 py-2 text-sm text-[#655b52]"
+            >
+              <span>
+                用户 {completion.anonymousIdPrefix} 完成了 {completion.moduleName}
+              </span>
+              {completion.completedAt ? (
+                <span className="shrink-0 text-xs text-[#9a9188]">
+                  {formatRelativeCompletionTime(completion.completedAt)}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </aside>
+  );
+}
+
 function CategoryPill({ category }: { category: ModuleCategory }) {
   const labelMap: Record<ModuleCategory, string> = {
     food: "food",
@@ -1658,6 +1778,24 @@ function getPlanModules(plan: RoutePlan): SelectedModule[] {
   return plan.modules;
 }
 
+function getCompletedRenderableModules(
+  plan: RoutePlan,
+  completedModules: Record<string, boolean>,
+) {
+  const modules = getPlanModules(plan).map((selectedModule, index) => {
+    const renderableModule = toRenderableModule(selectedModule);
+
+    return {
+      index,
+      module: renderableModule,
+      stateKey: getModuleStateKey(plan, renderableModule, index),
+    };
+  });
+  const completed = modules.filter((module) => completedModules[module.stateKey]);
+
+  return completed.length > 0 ? completed : modules.slice(0, 1);
+}
+
 function resolveModuleId(selectedModule: SelectedModule) {
   const rawId = selectedModule.moduleId ?? selectedModule.id;
 
@@ -1748,6 +1886,48 @@ function getTimeScaleLabel(currentTimeScale: TimeScale) {
   };
 
   return labels[currentTimeScale];
+}
+
+function getFeedbackEmoji(rating: string) {
+  if (rating === "useful" || rating === "有用") {
+    return "👍";
+  }
+
+  if (rating === "一般") {
+    return "😐";
+  }
+
+  if (rating === "不太适合") {
+    return "🙂";
+  }
+
+  return null;
+}
+
+function formatRelativeCompletionTime(value: string) {
+  const completedAt = new Date(value).getTime();
+
+  if (Number.isNaN(completedAt)) {
+    return "";
+  }
+
+  const diffInMinutes = Math.max(0, Math.floor((Date.now() - completedAt) / 60000));
+
+  if (diffInMinutes < 1) {
+    return "刚刚";
+  }
+
+  if (diffInMinutes < 60) {
+    return `${diffInMinutes}分钟前`;
+  }
+
+  const diffInHours = Math.floor(diffInMinutes / 60);
+
+  if (diffInHours < 24) {
+    return `${diffInHours}小时前`;
+  }
+
+  return "最近";
 }
 
 function normalizePlanKind(
