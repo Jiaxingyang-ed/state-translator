@@ -1,7 +1,10 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { getCityFromIP } from "@/lib/ipLocation";
 import { moduleLibrary } from "@/lib/moduleLibrary";
 import { createSupabaseServerClient } from "@/lib/supabaseClient";
+import { getUserHistory } from "@/lib/userHistory";
+import { getWeatherByCity, type WeatherSummary } from "@/lib/weather";
 import type { GeneratedRouteData, RouteScale, TimeScale } from "@/lib/routeTypes";
 
 type SupportedScale = Extract<RouteScale, "tonight" | "weekend" | "meal">;
@@ -208,6 +211,8 @@ export async function POST(request: Request) {
       apiKey,
       baseURL,
     });
+    const clientIp = getClientIp(request);
+    const context = await getGenerationContext(clientIp, anonymousId);
 
     const completion = await client.chat.completions.create({
       model: "deepseek-chat",
@@ -223,6 +228,10 @@ export async function POST(request: Request) {
             `时间尺度：${timeScale}`,
             `约束：${JSON.stringify({ time, budget, social })}`,
             `scale：${scale}`,
+            formatLocationLine(context.location),
+            formatWeatherLine(context.weather),
+            formatHistoryLine(context.history.likedModuleIds),
+            buildWeatherGuidance(context.weather),
             regenerate
               ? "重新生成：这是用户点击“换一种安排”的请求，请选择不同模块组合，避免与上一组过于相似。"
               : "",
@@ -303,6 +312,89 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+async function getGenerationContext(clientIp: string | null, anonymousId: string) {
+  const location = await getCityFromIP(clientIp);
+  const [weather, history] = await Promise.all([
+    location.city
+      ? getWeatherByCity(location.city)
+      : Promise.resolve<WeatherSummary>({ condition: "unknown", temp: null }),
+    getUserHistory(anonymousId),
+  ]);
+
+  return { location, weather, history };
+}
+
+function getClientIp(request: Request) {
+  const forwardedFor = request.headers.get("x-forwarded-for");
+
+  if (forwardedFor) {
+    return forwardedFor.split(",")[0]?.trim() || null;
+  }
+
+  return (
+    request.headers.get("x-real-ip") ??
+    request.headers.get("cf-connecting-ip") ??
+    null
+  );
+}
+
+function formatLocationLine(location: { city: string | null; country: string | null }) {
+  if (!location.city && !location.country) {
+    return "用户位置：未知。";
+  }
+
+  return `用户位置：${[location.city, location.country].filter(Boolean).join(", ")}。`;
+}
+
+function formatWeatherLine(weather: WeatherSummary) {
+  if (weather.condition === "unknown" || weather.temp === null) {
+    return "当前天气：未知。";
+  }
+
+  return `当前天气：${getWeatherConditionLabel(weather.condition)}，温度 ${Math.round(
+    weather.temp,
+  )}°C。`;
+}
+
+function formatHistoryLine(likedModuleIds: string[]) {
+  if (likedModuleIds.length === 0) {
+    return "用户历史上喜欢的模块ID：[]。";
+  }
+
+  return `用户历史上喜欢的模块ID：${JSON.stringify(
+    likedModuleIds,
+  )}（请参考这些偏好，但不要重复到无聊）。`;
+}
+
+function buildWeatherGuidance(weather: WeatherSummary) {
+  if (weather.condition === "rain" || weather.condition === "drizzle") {
+    return "天气指令：如果天气是雨天，不要推荐户外散步类模块，优先室内 food、space、mind 模块。";
+  }
+
+  if (weather.condition === "snow") {
+    return "天气指令：如果天气是雪天，避免长时间户外模块，优先温暖、室内、低风险模块。";
+  }
+
+  if (weather.condition === "clear") {
+    return "天气指令：天气晴朗，可以适度增加短距离 movement 模块，但仍需遵守用户精力和社交约束。";
+  }
+
+  return "天气指令：天气不明确时，不要过度依赖户外模块。";
+}
+
+function getWeatherConditionLabel(condition: WeatherSummary["condition"]) {
+  const labels: Record<WeatherSummary["condition"], string> = {
+    rain: "雨天",
+    clear: "晴天",
+    clouds: "多云",
+    snow: "雪天",
+    drizzle: "小雨",
+    unknown: "未知",
+  };
+
+  return labels[condition];
 }
 
 function parseGeneratedPlans(

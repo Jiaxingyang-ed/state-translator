@@ -748,8 +748,8 @@ function LinearPlanView({
   return (
     <div className="space-y-4">
       {plan.modules.map((selectedModule, index) => {
-        const module = toRenderableModule(selectedModule);
-        const stateKey = getModuleStateKey(plan, module, index);
+        const lifeModule = toRenderableModule(selectedModule);
+        const stateKey = getModuleStateKey(plan, lifeModule, index);
         const isFirstModule = index === 0;
 
         return (
@@ -761,11 +761,11 @@ function LinearPlanView({
             isLocked={index > 0 && !isPaid}
             isPaid={isPaid}
             isStarted={Boolean(startedModules[stateKey])}
-            module={module}
+            module={lifeModule}
             showTips={Boolean(expandedTips[stateKey])}
-            onComplete={() => onCompleteModule(module, index)}
+            onComplete={() => onCompleteModule(lifeModule, index)}
             onSave={isFirstModule ? onSave : undefined}
-            onStarterClick={() => onStarterClick(module, index)}
+            onStarterClick={() => onStarterClick(lifeModule, index)}
             onToggleTips={() => onToggleTips(stateKey)}
           />
         );
@@ -883,8 +883,8 @@ function WeekendDayPanel({
       <div className="space-y-4 border-t border-[#f0e7dd] p-5">
         {modules.map((selectedModule, localIndex) => {
           const globalIndex = globalStartIndex + localIndex;
-          const module = toRenderableModule(selectedModule);
-          const stateKey = getModuleStateKey(plan, module, globalIndex);
+          const lifeModule = toRenderableModule(selectedModule);
+          const stateKey = getModuleStateKey(plan, lifeModule, globalIndex);
           const isFirstModule = globalIndex === 0;
 
           return (
@@ -896,11 +896,11 @@ function WeekendDayPanel({
               isLocked={globalIndex > 0 && !isPaid}
               isPaid={isPaid}
               isStarted={Boolean(startedModules[stateKey])}
-              module={module}
+              module={lifeModule}
               showTips={Boolean(expandedTips[stateKey])}
-              onComplete={() => onCompleteModule(module, globalIndex)}
+              onComplete={() => onCompleteModule(lifeModule, globalIndex)}
               onSave={isFirstModule ? onSave : undefined}
-              onStarterClick={() => onStarterClick(module, globalIndex)}
+              onStarterClick={() => onStarterClick(lifeModule, globalIndex)}
               onToggleTips={() => onToggleTips(stateKey)}
             />
           );
@@ -930,11 +930,11 @@ function LongerPlanView({
 
       <div className="space-y-3">
         {plan.anchors.map((anchor, index) => {
-          const module = toRenderableModule(anchor);
+          const lifeModule = toRenderableModule(anchor);
 
           return (
             <div
-              key={`${anchor.day}-${module.moduleId}-${index}`}
+              key={`${anchor.day}-${lifeModule.moduleId}-${index}`}
               className="rounded-lg border border-[#e8ded2] bg-white p-5 shadow-sm"
             >
               <p className="text-sm font-medium text-[#9a641c]">
@@ -943,7 +943,7 @@ function LongerPlanView({
               <div className="mt-2 flex items-start justify-between gap-3">
                 <div>
                   <p className="text-lg font-medium text-[#29231f]">
-                    {module.name}
+                    {lifeModule.name}
                   </p>
                   {anchor.customContext ? (
                     <p className="mt-2 text-sm leading-6 text-[#655b52]">
@@ -952,7 +952,7 @@ function LongerPlanView({
                   ) : null}
                 </div>
                 <span className="shrink-0 rounded-full bg-[#f5efe8] px-3 py-1 text-xs text-[#655b52]">
-                  {module.duration} min
+                  {lifeModule.duration} min
                 </span>
               </div>
             </div>
