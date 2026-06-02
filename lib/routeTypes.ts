@@ -12,7 +12,11 @@ export type RouteScale =
 export type StepConstraints = {
   time: string;
   budget: string;
+  social?: string;
+  timeScale?: TimeScale;
 };
+
+export type TimeScale = "1hour" | "tonight" | "weekend" | "longer";
 
 export type FirstStep = {
   time: string;
@@ -38,8 +42,9 @@ export type RouteOption = {
 export type GeneratedRouteData = {
   routeId: string;
   scale: Exclude<RouteScale, "auto">;
+  timeScale?: TimeScale;
   translation: string;
-  options: RouteOption[];
+  options: unknown[];
   unlockedOptionIds: OptionId[];
 };
 

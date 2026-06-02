@@ -13,9 +13,11 @@ import type {
   OptionId,
   RouteScale,
   StepConstraints,
+  TimeScale,
 } from "@/lib/routeTypes";
 
-type ModuleRouteType = "comfort" | "shift";
+type PlanType = "comfort" | "shift";
+type PlanKind = "linear" | "weekend" | "longer";
 
 type SelectedModule = {
   moduleId?: string;
@@ -31,16 +33,42 @@ type SelectedModule = {
   customContext?: string;
 };
 
-type ModuleRoute = {
-  intro: string;
-  modules: SelectedModule[];
-  transitions: string[];
-  totalDuration: number;
-  type: ModuleRouteType;
+type Anchor = SelectedModule & {
+  day: number;
 };
 
-type ModuleRouteData = Omit<GeneratedRouteData, "options"> & {
-  options: ModuleRoute[];
+type LinearPlan = {
+  kind: "linear";
+  intro: string;
+  type: PlanType;
+  modules: SelectedModule[];
+  totalDuration: number;
+  timeScale: Extract<TimeScale, "1hour" | "tonight">;
+};
+
+type WeekendPlan = {
+  kind: "weekend";
+  intro: string;
+  type: PlanType;
+  saturdayModules: SelectedModule[];
+  sundayModules: SelectedModule[];
+  totalDuration: number;
+  timeScale: "weekend";
+};
+
+type LongerPlan = {
+  kind: "longer";
+  theme: string;
+  type: PlanType;
+  anchors: Anchor[];
+  timeScale: "longer";
+};
+
+type RoutePlan = LinearPlan | WeekendPlan | LongerPlan;
+
+type RoutePlanData = Omit<GeneratedRouteData, "options"> & {
+  timeScale: TimeScale;
+  options: RoutePlan[];
 };
 
 type RenderableModule = Omit<LifeModule, "starter" | "sensoryHooks" | "tips"> & {
@@ -55,6 +83,7 @@ type Step2DecisionProps = {
   userInput: string;
   constraints: StepConstraints;
   scale: RouteScale;
+  timeScale: TimeScale;
   initialRouteData?: GeneratedRouteData | null;
   paidOptionId?: OptionId | null;
   unlockedTimeline?: unknown;
@@ -108,6 +137,7 @@ export default function Step2Decision({
   userInput,
   constraints,
   scale,
+  timeScale,
   initialRouteData,
   paidOptionId,
   forceUnlockAll = false,
@@ -117,7 +147,7 @@ export default function Step2Decision({
   );
   const [isLoading, setIsLoading] = useState(!initialRouteData);
   const [error, setError] = useState<string | null>(null);
-  const [activeRouteIndex, setActiveRouteIndex] = useState(0);
+  const [activePlanIndex, setActivePlanIndex] = useState(0);
   const [activePaidOptionId, setActivePaidOptionId] = useState<OptionId | null>(
     paidOptionId ?? null,
   );
@@ -138,7 +168,7 @@ export default function Step2Decision({
     null,
   );
 
-  const resetLocalRouteState = useCallback(() => {
+  const resetLocalPlanState = useCallback(() => {
     setCompletedModules({});
     setStartedModules({});
     setExpandedTips({});
@@ -175,7 +205,7 @@ export default function Step2Decision({
     async (regenerate = false) => {
       setIsLoading(true);
       setError(null);
-      resetLocalRouteState();
+      resetLocalPlanState();
 
       try {
         if (regenerate) {
@@ -193,6 +223,7 @@ export default function Step2Decision({
             anonymousId,
             constraints,
             scale,
+            timeScale,
             regenerate,
           }),
         });
@@ -206,8 +237,9 @@ export default function Step2Decision({
         }
 
         setData(result.data);
-        setActiveRouteIndex(0);
+        setActivePlanIndex(0);
         sessionStorage.setItem("step1_scale", result.data.scale);
+        sessionStorage.setItem("step1_timeScale", result.data.timeScale ?? timeScale);
         sessionStorage.setItem("step1_route_id", result.data.routeId);
       } catch (caughtError) {
         const message =
@@ -220,7 +252,7 @@ export default function Step2Decision({
         setIsLoading(false);
       }
     },
-    [constraints, resetLocalRouteState, scale, userInput],
+    [constraints, resetLocalPlanState, scale, timeScale, userInput],
   );
 
   useEffect(() => {
@@ -248,16 +280,15 @@ export default function Step2Decision({
     });
   }, [paidOptionId]);
 
-  const moduleRouteData = useMemo(() => {
-    return data ? toModuleRouteData(data) : null;
-  }, [data]);
-
-  const activeRoute = moduleRouteData?.options[activeRouteIndex] ?? null;
-  const activeOptionId = activeRoute ? getOptionIdForRoute(activeRoute) : null;
-  const activeLegacyOptionId = activeRoute
-    ? getLegacyOptionIdForRoute(activeRoute)
+  const routePlanData = useMemo(() => {
+    return data ? toRoutePlanData(data, timeScale) : null;
+  }, [data, timeScale]);
+  const activePlan = routePlanData?.options[activePlanIndex] ?? null;
+  const activeOptionId = activePlan ? getOptionIdForPlan(activePlan) : null;
+  const activeLegacyOptionId = activePlan
+    ? getLegacyOptionIdForPlan(activePlan)
     : null;
-  const isRouteUnlocked =
+  const isPaid =
     Boolean(forceUnlockAll) ||
     isMember ||
     Boolean(activeOptionId && unlocked[activeOptionId]) ||
@@ -266,32 +297,33 @@ export default function Step2Decision({
     Boolean(activeLegacyOptionId && activePaidOptionId === activeLegacyOptionId) ||
     Boolean(
       activeOptionId &&
-        moduleRouteData?.unlockedOptionIds?.includes(activeOptionId),
+        routePlanData?.unlockedOptionIds?.includes(activeOptionId),
     ) ||
     Boolean(
       activeLegacyOptionId &&
-        moduleRouteData?.unlockedOptionIds?.includes(activeLegacyOptionId),
+        routePlanData?.unlockedOptionIds?.includes(activeLegacyOptionId),
     );
-
-  const renderableModules = useMemo(() => {
-    return activeRoute?.modules.map(toRenderableModule) ?? [];
-  }, [activeRoute]);
-  const completedCount = renderableModules.filter((module, index) =>
-    completedModules[getModuleStateKey(activeRoute, module, index)],
+  const renderedModules = useMemo(() => {
+    return activePlan ? getPlanModules(activePlan).map(toRenderableModule) : [];
+  }, [activePlan]);
+  const paidRelevant = activePlan?.kind === "linear" || activePlan?.kind === "weekend";
+  const completedCount = renderedModules.filter((module, index) =>
+    completedModules[getModuleStateKey(activePlan, module, index)],
   ).length;
-  const unlockedModuleCount = isRouteUnlocked
-    ? renderableModules.length
-    : Math.min(1, renderableModules.length);
+  const unlockedModuleCount =
+    !paidRelevant || isPaid
+      ? renderedModules.length
+      : Math.min(1, renderedModules.length);
 
   useEffect(() => {
-    if (!activeRoute || !activeOptionId || renderableModules.length === 0) {
+    if (!activePlan || !activeOptionId || !paidRelevant || renderedModules.length === 0) {
       return;
     }
 
     const routeCompletionKey = `${data?.routeId ?? "draft"}:${activeOptionId}`;
 
     if (
-      completedCount === renderableModules.length &&
+      completedCount === renderedModules.length &&
       feedbackPromptedKey !== routeCompletionKey
     ) {
       queueMicrotask(() => {
@@ -302,30 +334,32 @@ export default function Step2Decision({
     }
   }, [
     activeOptionId,
-    activeRoute,
+    activePlan,
     completedCount,
     data?.routeId,
     feedbackPromptedKey,
-    renderableModules.length,
+    paidRelevant,
+    renderedModules.length,
   ]);
 
-  const handleSwitchRoute = () => {
-    if (!moduleRouteData || moduleRouteData.options.length < 2) {
+  const handleSwitchPlan = () => {
+    if (!routePlanData || routePlanData.options.length < 2) {
       return;
     }
 
-    setActiveRouteIndex((current) => (current + 1) % moduleRouteData.options.length);
-    resetLocalRouteState();
+    setActivePlanIndex((current) => (current + 1) % routePlanData.options.length);
+    resetLocalPlanState();
   };
 
   const handlePay = async () => {
     try {
-      if (!data?.routeId || !activeRoute) {
+      if (!data?.routeId || !activePlan) {
         throw new Error("路线尚未保存，请刷新后重试");
       }
 
+      const amount = activePlan.kind === "weekend" ? 499 : 299;
       const anonymousId = getOrCreateAnonymousId();
-      const optionId = getOptionIdForRoute(activeRoute);
+      const optionId = getOptionIdForPlan(activePlan);
       const response = await fetch("/api/create-checkout-session", {
         method: "POST",
         headers: {
@@ -335,8 +369,11 @@ export default function Step2Decision({
           optionId,
           routeId: data.routeId,
           anonymousId,
-          planName: `${getRouteLabel(activeRoute.type)}完整路线`,
-          amount: 299,
+          planName:
+            activePlan.kind === "weekend"
+              ? "完整周末安排"
+              : `${getPlanLabel(activePlan.type)}完整路线`,
+          amount,
         }),
       });
 
@@ -399,7 +436,7 @@ export default function Step2Decision({
 
   const handleSaveTrip = async () => {
     try {
-      if (!data?.routeId || !activeRoute) {
+      if (!data?.routeId || !activePlan) {
         throw new Error("路线尚未保存，请刷新后重试");
       }
 
@@ -412,7 +449,7 @@ export default function Step2Decision({
         },
         body: JSON.stringify({
           routeId: data.routeId,
-          optionId: getOptionIdForRoute(activeRoute),
+          optionId: getOptionIdForPlan(activePlan),
           anonymousId,
         }),
       });
@@ -437,15 +474,24 @@ export default function Step2Decision({
     }
   };
 
+  const openFeedback = () => {
+    if (!activePlan) {
+      return;
+    }
+
+    setFeedbackOptionId(getOptionIdForPlan(activePlan));
+    setFeedbackOpen(true);
+  };
+
   const handleStarterClick = (module: RenderableModule, index: number) => {
-    const stateKey = getModuleStateKey(activeRoute, module, index);
+    const stateKey = getModuleStateKey(activePlan, module, index);
 
     setStartedModules((current) => ({ ...current, [stateKey]: true }));
     localStorage.setItem(`started_module_${stateKey}`, new Date().toISOString());
   };
 
   const handleCompleteModule = (module: RenderableModule, index: number) => {
-    const stateKey = getModuleStateKey(activeRoute, module, index);
+    const stateKey = getModuleStateKey(activePlan, module, index);
 
     setCompletedModules((current) => ({ ...current, [stateKey]: true }));
   };
@@ -483,9 +529,9 @@ export default function Step2Decision({
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#fbfaf7] px-5">
         <div className="rounded-lg border border-[#eadfd4] bg-white p-7 text-center shadow-sm">
-          <p className="text-lg font-light text-[#29231f]">正在安排今晚…</p>
+          <p className="text-lg font-light text-[#29231f]">正在安排…</p>
           <p className="mt-3 text-sm text-[#7d746b]">
-            我们会从几个小模块里拼出一条可开始的路线。
+            我们会按你的时间尺度拼出一份路线。
           </p>
         </div>
       </main>
@@ -514,7 +560,7 @@ export default function Step2Decision({
     );
   }
 
-  if (!moduleRouteData || !activeRoute) {
+  if (!routePlanData || !activePlan) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#fbfaf7] px-5">
         <div className="w-full max-w-md rounded-lg border border-[#eadfd4] bg-white p-7 text-center shadow-sm">
@@ -522,7 +568,7 @@ export default function Step2Decision({
             路线格式需要刷新
           </h1>
           <p className="mt-3 text-sm leading-6 text-[#6f665d]">
-            当前页面收到的不是模块化路线，请重新生成一次。
+            当前页面收到的路线结构不完整，请重新生成一次。
           </p>
           <button
             type="button"
@@ -539,87 +585,86 @@ export default function Step2Decision({
   return (
     <main className="min-h-screen bg-[#fbfaf7] px-5 pb-32 pt-7 sm:px-8">
       <div className="mx-auto max-w-3xl">
-        <header className="mb-6 flex flex-col gap-4 border-b border-[#eee5dc] pb-5 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm text-[#8a8178]">
-              {userInput || "今晚"} · {constraints.time} · {constraints.budget} ·{" "}
-              {getScaleLabel(moduleRouteData.scale)}
-            </p>
-            <h1 className="mt-3 text-3xl font-light leading-tight text-[#29231f] sm:text-4xl">
-              {activeRoute.intro || moduleRouteData.translation}
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-[#7d746b]">
-              {getRouteLabel(activeRoute.type)} · {activeRoute.totalDuration} 分钟
-            </p>
-          </div>
-
-          {moduleRouteData.options.length > 1 ? (
-            <button
-              type="button"
-              onClick={handleSwitchRoute}
-              className="rounded-full border border-[#ded3c8] bg-white px-4 py-2 text-sm font-medium text-[#433b34] shadow-sm transition hover:border-[#d49a43] hover:text-[#9a641c]"
-            >
-              🔄 换一种安排
-            </button>
-          ) : null}
-        </header>
+        <PageHeader
+          activePlan={activePlan}
+          constraints={constraints}
+          planCount={routePlanData.options.length}
+          scale={routePlanData.scale}
+          timeScale={routePlanData.timeScale}
+          userInput={userInput}
+          onSwitchPlan={handleSwitchPlan}
+        />
 
         <AnimatePresence mode="wait">
           <motion.section
-            key={activeRoute.type}
+            key={`${activePlan.kind}-${activePlan.type}-${activePlanIndex}`}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.22, ease: "easeOut" }}
-            className="space-y-4"
           >
-            {renderableModules.map((module, index) => {
-              const stateKey = getModuleStateKey(activeRoute, module, index);
-              const isFirstModule = index === 0;
-              const isLocked = index > 0 && !isRouteUnlocked;
-              const isCompleted = Boolean(completedModules[stateKey]);
-              const isStarted = Boolean(startedModules[stateKey]);
-              const showTips = Boolean(expandedTips[stateKey]);
-              const transition = activeRoute.transitions[index];
-
-              return (
-                <div key={stateKey}>
-                  <ModuleCard
-                    module={module}
-                    index={index}
-                    isFirstModule={isFirstModule}
-                    isLocked={isLocked}
-                    isPaid={isRouteUnlocked}
-                    isCompleted={isCompleted}
-                    isStarted={isStarted}
-                    showTips={showTips}
-                    onStarterClick={() => handleStarterClick(module, index)}
-                    onComplete={() => handleCompleteModule(module, index)}
-                    onToggleTips={() =>
-                      setExpandedTips((current) => ({
-                        ...current,
-                        [stateKey]: !current[stateKey],
-                      }))
-                    }
-                    onSave={isFirstModule ? handleSaveTrip : undefined}
-                  />
-                  {transition ? <RouteTransition text={transition} /> : null}
-                </div>
-              );
-            })}
+            {activePlan.kind === "weekend" ? (
+              <WeekendPlanView
+                completedModules={completedModules}
+                expandedTips={expandedTips}
+                isPaid={isPaid}
+                plan={activePlan}
+                startedModules={startedModules}
+                onCompleteModule={handleCompleteModule}
+                onSave={handleSaveTrip}
+                onStarterClick={handleStarterClick}
+                onToggleTips={(stateKey) =>
+                  setExpandedTips((current) => ({
+                    ...current,
+                    [stateKey]: !current[stateKey],
+                  }))
+                }
+              />
+            ) : activePlan.kind === "longer" ? (
+              <LongerPlanView
+                plan={activePlan}
+                onComplete={openFeedback}
+                onSubscribe={() => void handleSubscribe()}
+              />
+            ) : (
+              <LinearPlanView
+                completedModules={completedModules}
+                expandedTips={expandedTips}
+                isPaid={isPaid}
+                plan={activePlan}
+                startedModules={startedModules}
+                onCompleteModule={handleCompleteModule}
+                onSave={handleSaveTrip}
+                onStarterClick={handleStarterClick}
+                onToggleTips={(stateKey) =>
+                  setExpandedTips((current) => ({
+                    ...current,
+                    [stateKey]: !current[stateKey],
+                  }))
+                }
+              />
+            )}
           </motion.section>
         </AnimatePresence>
       </div>
 
-      <BottomUnlockBar
-        completedCount={completedCount}
-        isMember={isMember}
-        isUnlocked={isRouteUnlocked}
-        totalCount={renderableModules.length}
-        unlockedCount={unlockedModuleCount}
-        onUnlock={() => void handlePay()}
-        onSubscribe={() => void handleSubscribe()}
-      />
+      {paidRelevant ? (
+        <BottomActionBar
+          completedCount={completedCount}
+          isMember={isMember}
+          isPaid={isPaid}
+          priceLabel={activePlan.kind === "weekend" ? "$4.99" : "$2.99"}
+          totalCount={renderedModules.length}
+          unlockLabel={
+            activePlan.kind === "weekend" ? "解锁完整周末" : "解锁全部"
+          }
+          unlockedCount={unlockedModuleCount}
+          onComplete={openFeedback}
+          onSave={() => void handleSaveTrip()}
+          onSubscribe={() => void handleSubscribe()}
+          onUnlock={() => void handlePay()}
+        />
+      ) : null}
 
       <FeedbackModal
         open={feedbackOpen}
@@ -630,39 +675,344 @@ export default function Step2Decision({
   );
 }
 
+function PageHeader({
+  activePlan,
+  constraints,
+  planCount,
+  scale,
+  timeScale,
+  userInput,
+  onSwitchPlan,
+}: {
+  activePlan: RoutePlan;
+  constraints: StepConstraints;
+  planCount: number;
+  scale: RouteScale;
+  timeScale: TimeScale;
+  userInput: string;
+  onSwitchPlan: () => void;
+}) {
+  const title = activePlan.kind === "longer" ? activePlan.theme : activePlan.intro;
+  const subline =
+    activePlan.kind === "longer"
+      ? "主题锚点"
+      : `${getPlanLabel(activePlan.type)} · ${getPlanDurationLabel(activePlan)}`;
+
+  return (
+    <header className="mb-6 flex flex-col gap-4 border-b border-[#eee5dc] pb-5 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <p className="text-sm text-[#8a8178]">
+          {userInput || "今晚"} · {constraints.time} · {constraints.budget} ·{" "}
+          {getScaleLabel(scale)} · {getTimeScaleLabel(timeScale)}
+        </p>
+        <h1 className="mt-3 text-3xl font-light leading-tight text-[#29231f] sm:text-4xl">
+          {title}
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-[#7d746b]">{subline}</p>
+      </div>
+
+      {planCount > 1 ? (
+        <button
+          type="button"
+          onClick={onSwitchPlan}
+          className="rounded-full border border-[#ded3c8] bg-white px-4 py-2 text-sm font-medium text-[#433b34] shadow-sm transition hover:border-[#d49a43] hover:text-[#9a641c]"
+        >
+          🔄 换一种安排
+        </button>
+      ) : null}
+    </header>
+  );
+}
+
+function LinearPlanView({
+  completedModules,
+  expandedTips,
+  isPaid,
+  plan,
+  startedModules,
+  onCompleteModule,
+  onSave,
+  onStarterClick,
+  onToggleTips,
+}: {
+  completedModules: Record<string, boolean>;
+  expandedTips: Record<string, boolean>;
+  isPaid: boolean;
+  plan: LinearPlan;
+  startedModules: Record<string, boolean>;
+  onCompleteModule: (module: RenderableModule, index: number) => void;
+  onSave: () => void;
+  onStarterClick: (module: RenderableModule, index: number) => void;
+  onToggleTips: (stateKey: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      {plan.modules.map((selectedModule, index) => {
+        const module = toRenderableModule(selectedModule);
+        const stateKey = getModuleStateKey(plan, module, index);
+        const isFirstModule = index === 0;
+
+        return (
+          <ModuleCard
+            key={stateKey}
+            index={index}
+            isCompleted={Boolean(completedModules[stateKey])}
+            isFirstModule={isFirstModule}
+            isLocked={index > 0 && !isPaid}
+            isPaid={isPaid}
+            isStarted={Boolean(startedModules[stateKey])}
+            module={module}
+            showTips={Boolean(expandedTips[stateKey])}
+            onComplete={() => onCompleteModule(module, index)}
+            onSave={isFirstModule ? onSave : undefined}
+            onStarterClick={() => onStarterClick(module, index)}
+            onToggleTips={() => onToggleTips(stateKey)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function WeekendPlanView({
+  completedModules,
+  expandedTips,
+  isPaid,
+  plan,
+  startedModules,
+  onCompleteModule,
+  onSave,
+  onStarterClick,
+  onToggleTips,
+}: {
+  completedModules: Record<string, boolean>;
+  expandedTips: Record<string, boolean>;
+  isPaid: boolean;
+  plan: WeekendPlan;
+  startedModules: Record<string, boolean>;
+  onCompleteModule: (module: RenderableModule, index: number) => void;
+  onSave: () => void;
+  onStarterClick: (module: RenderableModule, index: number) => void;
+  onToggleTips: (stateKey: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <WeekendDayPanel
+        defaultOpen
+        completedModules={completedModules}
+        dayLabel="周六"
+        expandedTips={expandedTips}
+        globalStartIndex={0}
+        isPaid={isPaid}
+        modules={plan.saturdayModules}
+        plan={plan}
+        startedModules={startedModules}
+        onCompleteModule={onCompleteModule}
+        onSave={onSave}
+        onStarterClick={onStarterClick}
+        onToggleTips={onToggleTips}
+      />
+      <WeekendDayPanel
+        completedModules={completedModules}
+        dayLabel="周日"
+        expandedTips={expandedTips}
+        globalStartIndex={plan.saturdayModules.length}
+        isPaid={isPaid}
+        modules={plan.sundayModules}
+        plan={plan}
+        startedModules={startedModules}
+        onCompleteModule={onCompleteModule}
+        onSave={onSave}
+        onStarterClick={onStarterClick}
+        onToggleTips={onToggleTips}
+      />
+    </div>
+  );
+}
+
+function WeekendDayPanel({
+  completedModules,
+  dayLabel,
+  defaultOpen = false,
+  expandedTips,
+  globalStartIndex,
+  isPaid,
+  modules,
+  plan,
+  startedModules,
+  onCompleteModule,
+  onSave,
+  onStarterClick,
+  onToggleTips,
+}: {
+  completedModules: Record<string, boolean>;
+  dayLabel: string;
+  defaultOpen?: boolean;
+  expandedTips: Record<string, boolean>;
+  globalStartIndex: number;
+  isPaid: boolean;
+  modules: SelectedModule[];
+  plan: WeekendPlan;
+  startedModules: Record<string, boolean>;
+  onCompleteModule: (module: RenderableModule, index: number) => void;
+  onSave: () => void;
+  onStarterClick: (module: RenderableModule, index: number) => void;
+  onToggleTips: (stateKey: string) => void;
+}) {
+  const totalDuration = modules.reduce(
+    (total, selectedModule) => total + toRenderableModule(selectedModule).duration,
+    0,
+  );
+
+  return (
+    <details
+      open={defaultOpen}
+      className="group rounded-lg border border-[#e8ded2] bg-white shadow-sm"
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 text-[#29231f] marker:hidden">
+        <div>
+          <p className="text-lg font-medium">{dayLabel}</p>
+          <p className="mt-1 text-sm text-[#8a8178]">
+            {modules.length} 个模块 · {totalDuration} 分钟
+          </p>
+        </div>
+        <span className="text-sm text-[#9a9188] transition group-open:rotate-180">
+          ↓
+        </span>
+      </summary>
+      <div className="space-y-4 border-t border-[#f0e7dd] p-5">
+        {modules.map((selectedModule, localIndex) => {
+          const globalIndex = globalStartIndex + localIndex;
+          const module = toRenderableModule(selectedModule);
+          const stateKey = getModuleStateKey(plan, module, globalIndex);
+          const isFirstModule = globalIndex === 0;
+
+          return (
+            <ModuleCard
+              key={stateKey}
+              index={globalIndex}
+              isCompleted={Boolean(completedModules[stateKey])}
+              isFirstModule={isFirstModule}
+              isLocked={globalIndex > 0 && !isPaid}
+              isPaid={isPaid}
+              isStarted={Boolean(startedModules[stateKey])}
+              module={module}
+              showTips={Boolean(expandedTips[stateKey])}
+              onComplete={() => onCompleteModule(module, globalIndex)}
+              onSave={isFirstModule ? onSave : undefined}
+              onStarterClick={() => onStarterClick(module, globalIndex)}
+              onToggleTips={() => onToggleTips(stateKey)}
+            />
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+function LongerPlanView({
+  plan,
+  onComplete,
+  onSubscribe,
+}: {
+  plan: LongerPlan;
+  onComplete: () => void;
+  onSubscribe: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-[#e8ded2] bg-white p-6 shadow-sm">
+        <p className="text-sm text-[#8a8178]">生活主题</p>
+        <h2 className="mt-2 text-3xl font-light text-[#29231f]">
+          {plan.theme}
+        </h2>
+      </div>
+
+      <div className="space-y-3">
+        {plan.anchors.map((anchor, index) => {
+          const module = toRenderableModule(anchor);
+
+          return (
+            <div
+              key={`${anchor.day}-${module.moduleId}-${index}`}
+              className="rounded-lg border border-[#e8ded2] bg-white p-5 shadow-sm"
+            >
+              <p className="text-sm font-medium text-[#9a641c]">
+                第 {anchor.day} 天
+              </p>
+              <div className="mt-2 flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-lg font-medium text-[#29231f]">
+                    {module.name}
+                  </p>
+                  {anchor.customContext ? (
+                    <p className="mt-2 text-sm leading-6 text-[#655b52]">
+                      {anchor.customContext}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="shrink-0 rounded-full bg-[#f5efe8] px-3 py-1 text-xs text-[#655b52]">
+                  {module.duration} min
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={onComplete}
+          className="rounded-lg border border-[#2e4d48] px-4 py-3 text-sm font-medium text-[#2e4d48] transition hover:bg-[#e2eee9]"
+        >
+          我完成了
+        </button>
+        <button
+          type="button"
+          onClick={onSubscribe}
+          className="rounded-lg bg-[#d9952f] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#bd7d1f]"
+        >
+          升级会员解锁更多主题
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ModuleCard({
-  module,
   index,
+  isCompleted,
   isFirstModule,
   isLocked,
   isPaid,
-  isCompleted,
   isStarted,
+  module,
   showTips,
-  onStarterClick,
   onComplete,
-  onToggleTips,
   onSave,
+  onStarterClick,
+  onToggleTips,
 }: {
-  module: RenderableModule;
   index: number;
+  isCompleted: boolean;
   isFirstModule: boolean;
   isLocked: boolean;
   isPaid: boolean;
-  isCompleted: boolean;
   isStarted: boolean;
+  module: RenderableModule;
   showTips: boolean;
-  onStarterClick: () => void;
   onComplete: () => void;
-  onToggleTips: () => void;
   onSave?: () => void;
+  onStarterClick: () => void;
+  onToggleTips: () => void;
 }) {
   const visibleInstructions = isPaid
     ? module.instructions
     : isFirstModule
       ? module.instructions.slice(0, 2)
       : [];
-  const hasTips = isPaid && module.tips && module.tips.length > 0;
+  const hasTips = isPaid && module.tips.length > 0;
 
   return (
     <motion.article
@@ -775,7 +1125,7 @@ function ModuleCard({
                   exit={{ height: 0, opacity: 0 }}
                   className="mt-3 space-y-2 overflow-hidden"
                 >
-                  {module.tips?.map((tip) => (
+                  {module.tips.map((tip) => (
                     <li
                       key={tip}
                       className="rounded-lg bg-[#fbfaf7] px-4 py-3 text-sm leading-6 text-[#655b52]"
@@ -813,22 +1163,30 @@ function ModuleCard({
   );
 }
 
-function BottomUnlockBar({
+function BottomActionBar({
   completedCount,
   isMember,
-  isUnlocked,
+  isPaid,
+  priceLabel,
   totalCount,
+  unlockLabel,
   unlockedCount,
-  onUnlock,
+  onComplete,
+  onSave,
   onSubscribe,
+  onUnlock,
 }: {
   completedCount: number;
   isMember: boolean;
-  isUnlocked: boolean;
+  isPaid: boolean;
+  priceLabel: string;
   totalCount: number;
+  unlockLabel: string;
   unlockedCount: number;
-  onUnlock: () => void;
+  onComplete: () => void;
+  onSave: () => void;
   onSubscribe: () => void;
+  onUnlock: () => void;
 }) {
   return (
     <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[#eadfd4] bg-[#fffdfa]/95 px-5 py-3 shadow-[0_-8px_24px_rgba(41,35,31,0.08)] backdrop-blur-md">
@@ -843,14 +1201,23 @@ function BottomUnlockBar({
           </p>
         </div>
 
-        {isUnlocked ? (
-          <button
-            type="button"
-            disabled
-            className="rounded-lg bg-[#e2eee9] px-5 py-3 text-sm font-medium text-[#2e4d48]"
-          >
-            已解锁全部
-          </button>
+        {isPaid ? (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={onSave}
+              className="rounded-lg border border-[#2e4d48] px-5 py-3 text-sm font-medium text-[#2e4d48] transition hover:bg-[#e2eee9]"
+            >
+              保存到我的行程
+            </button>
+            <button
+              type="button"
+              onClick={onComplete}
+              className="rounded-lg bg-[#2e4d48] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#243f3b]"
+            >
+              我完成了
+            </button>
+          </div>
         ) : (
           <div className="flex flex-col gap-2 sm:flex-row">
             <button
@@ -858,7 +1225,7 @@ function BottomUnlockBar({
               onClick={onUnlock}
               className="rounded-lg bg-[#d9952f] px-5 py-3 text-sm font-medium text-white transition hover:bg-[#bd7d1f]"
             >
-              🔓 解锁全部 ($2.99)
+              🔓 {unlockLabel} ({priceLabel})
             </button>
             <button
               type="button"
@@ -870,15 +1237,6 @@ function BottomUnlockBar({
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function RouteTransition({ text }: { text: string }) {
-  return (
-    <div className="py-3 text-center">
-      <p className="text-lg leading-none text-[#c0aa94]">↓</p>
-      <p className="mt-2 text-sm italic leading-6 text-[#8a8178]">{text}</p>
     </div>
   );
 }
@@ -1022,73 +1380,150 @@ function FeedbackModal({
   );
 }
 
-function toModuleRouteData(data: GeneratedRouteData): ModuleRouteData | null {
+function toRoutePlanData(
+  data: GeneratedRouteData,
+  fallbackTimeScale: TimeScale,
+): RoutePlanData | null {
   const options = data.options as unknown;
+  const effectiveTimeScale = normalizeTimeScale(data.timeScale ?? fallbackTimeScale);
 
   if (!Array.isArray(options)) {
     return null;
   }
 
-  const routes = options
+  const plans = options
     .map((option, index) =>
-      normalizeModuleRoute(option, index === 0 ? "comfort" : "shift"),
+      normalizeRoutePlan(
+        option,
+        effectiveTimeScale,
+        index === 0 ? "comfort" : "shift",
+      ),
     )
-    .filter((route): route is ModuleRoute => route !== null);
+    .filter((plan): plan is RoutePlan => plan !== null);
 
-  if (routes.length === 0) {
+  if (plans.length === 0) {
     return null;
   }
 
   return {
     ...data,
-    options: routes,
+    timeScale: effectiveTimeScale,
+    options: plans,
     unlockedOptionIds: data.unlockedOptionIds ?? [],
   };
 }
 
-function normalizeModuleRoute(
+function normalizeRoutePlan(
   value: unknown,
-  fallbackType: ModuleRouteType,
-): ModuleRoute | null {
+  timeScale: TimeScale,
+  fallbackType: PlanType,
+): RoutePlan | null {
   if (!isRecord(value)) {
     return null;
   }
 
-  const modules = Array.isArray(value.modules)
-    ? value.modules
-        .map(normalizeSelectedModule)
-        .filter((module): module is SelectedModule => module !== null)
-    : [];
+  const kind = normalizePlanKind(value.kind, timeScale, value);
+
+  if (kind === "weekend") {
+    return normalizeWeekendPlan(value, fallbackType);
+  }
+
+  if (kind === "longer") {
+    return normalizeLongerPlan(value, fallbackType);
+  }
+
+  return normalizeLinearPlan(value, fallbackType, timeScale);
+}
+
+function normalizeLinearPlan(
+  value: Record<string, unknown>,
+  fallbackType: PlanType,
+  timeScale: TimeScale,
+): LinearPlan | null {
+  const rawModules = Array.isArray(value.modules) ? value.modules : [];
+  const modules = rawModules
+    .map(normalizeSelectedModule)
+    .filter((module): module is SelectedModule => module !== null);
 
   if (modules.length === 0) {
     return null;
   }
 
-  const routeType =
-    value.type === "comfort" || value.type === "shift"
-      ? value.type
-      : fallbackType;
-  const transitions = Array.isArray(value.transitions)
-    ? value.transitions
-        .filter((transition): transition is string => typeof transition === "string")
-        .map((transition) => transition.trim())
-        .filter(Boolean)
-    : [];
-  const totalDuration =
-    typeof value.totalDuration === "number"
-      ? value.totalDuration
-      : modules.reduce((total, module) => {
-          const renderableModule = toRenderableModule(module);
+  return {
+    kind: "linear",
+    intro:
+      typeof value.intro === "string" && value.intro.trim()
+        ? value.intro.trim()
+        : "先从一步开始",
+    type: normalizePlanType(value.type, fallbackType),
+    modules,
+    totalDuration:
+      typeof value.totalDuration === "number"
+        ? value.totalDuration
+        : sumSelectedModuleDurations(modules),
+    timeScale: timeScale === "1hour" ? "1hour" : "tonight",
+  };
+}
 
-          return total + renderableModule.duration;
-        }, 0);
+function normalizeWeekendPlan(
+  value: Record<string, unknown>,
+  fallbackType: PlanType,
+): WeekendPlan | null {
+  const saturdayModules = Array.isArray(value.saturdayModules)
+    ? value.saturdayModules
+        .map(normalizeSelectedModule)
+        .filter((module): module is SelectedModule => module !== null)
+    : [];
+  const sundayModules = Array.isArray(value.sundayModules)
+    ? value.sundayModules
+        .map(normalizeSelectedModule)
+        .filter((module): module is SelectedModule => module !== null)
+    : [];
+
+  if (saturdayModules.length === 0 || sundayModules.length === 0) {
+    return null;
+  }
 
   return {
-    intro: typeof value.intro === "string" ? value.intro : "先从一个动作开始",
-    modules,
-    transitions,
-    totalDuration,
-    type: routeType,
+    kind: "weekend",
+    intro:
+      typeof value.intro === "string" && value.intro.trim()
+        ? value.intro.trim()
+        : "周末慢慢展开",
+    type: normalizePlanType(value.type, fallbackType),
+    saturdayModules,
+    sundayModules,
+    totalDuration:
+      typeof value.totalDuration === "number"
+        ? value.totalDuration
+        : sumSelectedModuleDurations([...saturdayModules, ...sundayModules]),
+    timeScale: "weekend",
+  };
+}
+
+function normalizeLongerPlan(
+  value: Record<string, unknown>,
+  fallbackType: PlanType,
+): LongerPlan | null {
+  const anchors = Array.isArray(value.anchors)
+    ? value.anchors
+        .map(normalizeAnchor)
+        .filter((anchor): anchor is Anchor => anchor !== null)
+    : [];
+
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "longer",
+    theme:
+      typeof value.theme === "string" && value.theme.trim()
+        ? value.theme.trim()
+        : "恢复精力周",
+    type: normalizePlanType(value.type, fallbackType),
+    anchors,
+    timeScale: "longer",
   };
 }
 
@@ -1154,6 +1589,22 @@ function normalizeSelectedModule(value: unknown): SelectedModule | null {
   return selected.moduleId || selected.id || selected.name ? selected : null;
 }
 
+function normalizeAnchor(value: unknown): Anchor | null {
+  const selectedModule = normalizeSelectedModule(value);
+
+  if (!selectedModule || !isRecord(value)) {
+    return null;
+  }
+
+  return {
+    ...selectedModule,
+    day:
+      typeof value.day === "number" && Number.isFinite(value.day)
+        ? Math.max(1, Math.round(value.day))
+        : 1,
+  };
+}
+
 function toRenderableModule(selectedModule: SelectedModule): RenderableModule {
   const moduleId = resolveModuleId(selectedModule);
   const baseModule = moduleId ? moduleById.get(moduleId) : undefined;
@@ -1195,6 +1646,18 @@ function toRenderableModule(selectedModule: SelectedModule): RenderableModule {
   };
 }
 
+function getPlanModules(plan: RoutePlan): SelectedModule[] {
+  if (plan.kind === "weekend") {
+    return [...plan.saturdayModules, ...plan.sundayModules];
+  }
+
+  if (plan.kind === "longer") {
+    return plan.anchors;
+  }
+
+  return plan.modules;
+}
+
 function resolveModuleId(selectedModule: SelectedModule) {
   const rawId = selectedModule.moduleId ?? selectedModule.id;
 
@@ -1207,6 +1670,13 @@ function resolveModuleId(selectedModule: SelectedModule) {
   }
 
   return null;
+}
+
+function sumSelectedModuleDurations(modules: SelectedModule[]) {
+  return modules.reduce(
+    (total, selectedModule) => total + toRenderableModule(selectedModule).duration,
+    0,
+  );
 }
 
 function buildSensoryHooks(name: string, category: ModuleCategory) {
@@ -1228,23 +1698,31 @@ function buildDefaultTips(name: string) {
 }
 
 function getModuleStateKey(
-  route: ModuleRoute | null,
+  plan: RoutePlan | null,
   module: RenderableModule,
   index: number,
 ) {
-  return `${route?.type ?? "route"}:${module.moduleId}:${index}`;
+  return `${plan?.kind ?? "plan"}:${plan?.type ?? "comfort"}:${module.moduleId}:${index}`;
 }
 
-function getOptionIdForRoute(route: ModuleRoute): OptionId {
-  return route.type;
+function getOptionIdForPlan(plan: RoutePlan): OptionId {
+  return plan.type;
 }
 
-function getLegacyOptionIdForRoute(route: ModuleRoute): OptionId {
-  return route.type === "comfort" ? "A" : "B";
+function getLegacyOptionIdForPlan(plan: RoutePlan): OptionId {
+  return plan.type === "comfort" ? "A" : "B";
 }
 
-function getRouteLabel(type: ModuleRouteType) {
+function getPlanLabel(type: PlanType) {
   return type === "comfort" ? "顺着此刻" : "轻轻掰一下";
+}
+
+function getPlanDurationLabel(plan: RoutePlan) {
+  if (plan.kind === "longer") {
+    return `${plan.anchors.length} 个锚点`;
+  }
+
+  return `${plan.totalDuration} 分钟`;
 }
 
 function getScaleLabel(currentScale: RouteScale) {
@@ -1259,6 +1737,62 @@ function getScaleLabel(currentScale: RouteScale) {
   };
 
   return labels[currentScale];
+}
+
+function getTimeScaleLabel(currentTimeScale: TimeScale) {
+  const labels: Record<TimeScale, string> = {
+    "1hour": "1小时",
+    tonight: "今晚",
+    weekend: "周末",
+    longer: "更长",
+  };
+
+  return labels[currentTimeScale];
+}
+
+function normalizePlanKind(
+  value: unknown,
+  timeScale: TimeScale,
+  record: Record<string, unknown>,
+): PlanKind {
+  if (value === "linear" || value === "weekend" || value === "longer") {
+    return value;
+  }
+
+  if (Array.isArray(record.saturdayModules) || Array.isArray(record.sundayModules)) {
+    return "weekend";
+  }
+
+  if (Array.isArray(record.anchors) || typeof record.theme === "string") {
+    return "longer";
+  }
+
+  if (timeScale === "weekend") {
+    return "weekend";
+  }
+
+  if (timeScale === "longer") {
+    return "longer";
+  }
+
+  return "linear";
+}
+
+function normalizePlanType(value: unknown, fallbackType: PlanType): PlanType {
+  return value === "comfort" || value === "shift" ? value : fallbackType;
+}
+
+function normalizeTimeScale(value: unknown): TimeScale {
+  if (
+    value === "1hour" ||
+    value === "tonight" ||
+    value === "weekend" ||
+    value === "longer"
+  ) {
+    return value;
+  }
+
+  return "tonight";
 }
 
 function isModuleCategory(value: unknown): value is ModuleCategory {

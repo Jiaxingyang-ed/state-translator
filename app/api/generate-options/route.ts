@@ -2,35 +2,66 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { moduleLibrary } from "@/lib/moduleLibrary";
 import { createSupabaseServerClient } from "@/lib/supabaseClient";
-import type { GeneratedRouteData, RouteScale } from "@/lib/routeTypes";
+import type { GeneratedRouteData, RouteScale, TimeScale } from "@/lib/routeTypes";
 
 type SupportedScale = Extract<RouteScale, "tonight" | "weekend" | "meal">;
+type PlanKind = "linear" | "weekend" | "longer";
+type PlanType = "comfort" | "shift";
 
 type RequestBody = {
   inputText?: unknown;
   anonymousId?: unknown;
   regenerate?: unknown;
   scale?: unknown;
+  timeScale?: unknown;
   constraints?: {
     time?: unknown;
     budget?: unknown;
     social?: unknown;
+    timeScale?: unknown;
   };
 };
 
-type ModuleRoute = {
-  intro: string;
-  modules: Array<{
-    moduleId: string;
-    customContext?: string;
-  }>;
-  transitions: string[];
-  totalDuration: number;
-  type: "comfort" | "shift";
+type SelectedModule = {
+  moduleId: string;
+  customContext?: string;
 };
 
-type GeneratedRoutesResponse = {
-  routes: [ModuleRoute, ModuleRoute];
+type Anchor = SelectedModule & {
+  day: number;
+};
+
+type LinearPlan = {
+  kind: "linear";
+  intro: string;
+  type: PlanType;
+  modules: SelectedModule[];
+  totalDuration: number;
+  timeScale: Extract<TimeScale, "1hour" | "tonight">;
+};
+
+type WeekendPlan = {
+  kind: "weekend";
+  intro: string;
+  type: PlanType;
+  saturdayModules: SelectedModule[];
+  sundayModules: SelectedModule[];
+  totalDuration: number;
+  timeScale: "weekend";
+};
+
+type LongerPlan = {
+  kind: "longer";
+  theme: string;
+  type: PlanType;
+  anchors: Anchor[];
+  timeScale: "longer";
+};
+
+type GeneratedPlan = LinearPlan | WeekendPlan | LongerPlan;
+
+type GeneratedPlansResponse = {
+  plans: GeneratedPlan[];
 };
 
 const moduleIdSet = new Set(moduleLibrary.map((module) => module.id));
@@ -43,93 +74,78 @@ const MODULE_CATALOG = moduleLibrary
   )
   .join("\n");
 
-const BASE_PROMPT = `
-你是 state-translator 的路线编排器。
-用户会输入一个今晚/周末/一顿饭相关的模糊状态，以及时间、预算、社交约束。
-
-你的任务不是生成具体步骤。
-具体步骤已经存在于模块库中，你只能从模块库中选择模块、排序，并为模块之间写过渡。
-
-你要输出两条路线：
-- comfort：顺着此刻，让用户先稳定下来。
-- shift：轻轻掰一下，让用户做一点低压力的对冲。
-
-路线要有节奏感：起步要容易，中段要有一点变化，收尾要能落地。
-不要诊断用户，不要使用治疗、疗愈、创伤等词。
-不要输出文艺散文，不要写模块步骤。
-`.trim();
-
-const SCALE_PROMPTS: Record<SupportedScale, string> = {
-  tonight: `
-scale = tonight。
-路线应该适合今晚开始，优先选择 3-5 个总时长不夸张的模块。
-如果 time 是“1小时”，totalDuration 尽量不超过 60。
-如果 social 是 Alone，避免强社交模块；Someone 可以包含一条轻联系；Open 可以保留可约人的余地。
-`.trim(),
-  weekend: `
-scale = weekend。
-路线应该像一个轻量周末安排，可以选择 4-5 个模块。
-模块顺序要能跨半天到两天展开，但不要安排复杂旅行。
-如果预算低，优先选择 space、mind、movement 中的低成本模块。
-`.trim(),
-  meal: `
-scale = meal。
-路线应该围绕一顿饭展开，必须至少选择 2 个 food 模块。
-可以搭配一个 space 模块作为餐桌或厨房准备，也可以用一个 mind 模块收尾。
-不要生成菜谱步骤，只选择已有 food 模块。
-`.trim(),
-};
-
-const OUTPUT_PROMPT = `
+const COMMON_RULES = `
 可用模块如下，每行格式为：moduleId | name | category | duration | energyLevel
 ${MODULE_CATALOG}
 
-严格只返回 JSON，不要 Markdown，不要代码块，不要额外解释。
+硬性规则：
+- moduleId 必须来自模块库，不允许编造。
+- customContext 是一句具体前置语，不要生成步骤。
+- 不要诊断用户，不要使用治疗、疗愈、创伤等词。
+- 不要输出 Markdown，不要代码块，不要额外解释。
+- 严格只返回 JSON。
+`.trim();
 
-JSON 结构必须严格如下：
+const LINEAR_PROMPT = `
+你是一位生活节奏编排师。用户需要一段短时间的线性体验（1小时或一个晚上）。
+请从模块库中选择 3-4 个模块，按“启动→投入→收束”的顺序排列。
+
+输出 JSON 格式：
 {
-  "routes": [
-    {
-      "intro": string,
-      "modules": [
-        {
-          "moduleId": string,
-          "customContext": string
-        }
-      ],
-      "transitions": string[],
-      "totalDuration": number,
-      "type": "comfort"
-    },
-    {
-      "intro": string,
-      "modules": [
-        {
-          "moduleId": string,
-          "customContext": string
-        }
-      ],
-      "transitions": string[],
-      "totalDuration": number,
-      "type": "shift"
-    }
+  "intro": "一句话开场白（10字内）",
+  "type": "comfort" | "shift",
+  "modules": [
+    { "moduleId": "mod_slow_cooking", "customContext": "个性化前置语（可选）" }
   ]
 }
 
-硬性要求：
-- routes 必须恰好 2 条，一条 type 为 comfort，一条 type 为 shift。
-- intro 是一句话定调，不超过 15 个中文字符。
-- 每条路线选择 3-5 个模块。
-- moduleId 必须来自上面的模块库，不允许编造。
-- customContext 可选，用来说明这个模块如何贴合用户当前状态；不要写步骤。
-- transitions 长度必须等于 modules.length - 1。
-- transitions 每条不超过 24 个中文字符，要简短、具体、有画面感。
-- totalDuration 必须等于所选模块 duration 之和。
-- 不要生成 instructions、timeline、firstStep 或任何具体操作步骤。
+不要超过4个模块。不要输出过渡语。
 `.trim();
 
-function buildSystemPrompt(scale: SupportedScale) {
-  return [BASE_PROMPT, SCALE_PROMPTS[scale], OUTPUT_PROMPT].join("\n\n");
+const WEEKEND_PROMPT = `
+你是一位生活节奏编排师。用户需要一份周末安排（两天）。
+请输出两个模块序列：周六（3-5个模块，基调稍活跃）和周日（3-5个模块，基调稍舒缓）。
+
+输出 JSON 格式：
+{
+  "intro": "一句话周末开场白",
+  "type": "comfort" | "shift",
+  "saturdayModules": [
+    { "moduleId": "...", "customContext": "..." }
+  ],
+  "sundayModules": [
+    { "moduleId": "...", "customContext": "..." }
+  ]
+}
+`.trim();
+
+const LONGER_PROMPT = `
+你是一位生活策划师。用户需要一份超过一周的生活基调规划。
+请输出一个生活主题和 3-5 个关键锚点事件（每 2-3 天一个）。
+
+输出 JSON 格式：
+{
+  "theme": "例如：恢复精力周",
+  "anchors": [
+    { "day": 1, "moduleId": "mod_slow_cooking", "customContext": "下班后慢慢做一顿饭" },
+    { "day": 3, "moduleId": "mod_evening_walk", "customContext": "去河边走半小时" }
+  ]
+}
+`.trim();
+
+function buildSystemPrompt(timeScale: TimeScale) {
+  const selectedPrompt =
+    timeScale === "weekend"
+      ? WEEKEND_PROMPT
+      : timeScale === "longer"
+        ? LONGER_PROMPT
+        : LINEAR_PROMPT;
+
+  return [
+    selectedPrompt,
+    `当前 timeScale = ${timeScale}。根据时间尺度不同，输出结构应不同；后续会继续补充更细规则。`,
+    COMMON_RULES,
+  ].join("\n\n");
 }
 
 export async function POST(request: Request) {
@@ -151,8 +167,11 @@ export async function POST(request: Request) {
       typeof body.constraints?.social === "string"
         ? body.constraints.social.trim()
         : "Alone";
-    const regenerate = body.regenerate === true;
     const scale = normalizeScale(body.scale);
+    const timeScale = normalizeTimeScale(
+      body.timeScale ?? body.constraints?.timeScale,
+    );
+    const regenerate = body.regenerate === true;
 
     if (!inputText) {
       return NextResponse.json(
@@ -195,23 +214,25 @@ export async function POST(request: Request) {
       messages: [
         {
           role: "system",
-          content: buildSystemPrompt(scale),
+          content: buildSystemPrompt(timeScale),
         },
         {
           role: "user",
-          content: JSON.stringify({
-            inputText,
-            constraints: { time, budget, social },
-            scale,
-            regenerate,
-            instruction: regenerate
-              ? "这是用户点击“换两个看看”的重新生成请求，请选择不同模块组合，避免与上一组过于相似。"
-              : undefined,
-          }),
+          content: [
+            `用户状态：${inputText}`,
+            `时间尺度：${timeScale}`,
+            `约束：${JSON.stringify({ time, budget, social })}`,
+            `scale：${scale}`,
+            regenerate
+              ? "重新生成：这是用户点击“换一种安排”的请求，请选择不同模块组合，避免与上一组过于相似。"
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
         },
       ],
       response_format: { type: "json_object" },
-      temperature: 0.7,
+      temperature: 0.72,
     });
 
     const content = completion.choices[0]?.message?.content;
@@ -223,10 +244,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = parseGeneratedRoutes(content, scale);
+    const data = parseGeneratedPlans(content, timeScale);
 
     if (!data) {
-      console.error("AI module route parse error:", content.slice(0, 1200));
+      console.error("AI plan parse error:", content.slice(0, 1200));
       return NextResponse.json(
         { error: "AI 返回格式不正确，请重试" },
         { status: 502 },
@@ -234,15 +255,16 @@ export async function POST(request: Request) {
     }
 
     const supabase = createSupabaseServerClient();
+    const translation = buildTranslation(data.plans, timeScale);
     const { data: insertedRoute, error: insertError } = await supabase
       .from("generated_routes")
       .insert({
         anonymous_id: anonymousId,
         user_input: inputText,
-        constraints: { time, budget, social },
+        constraints: { time, budget, social, timeScale },
         scale,
-        translation: buildTranslation(data.routes),
-        options: data.routes,
+        translation,
+        options: data.plans,
       })
       .select("id")
       .single();
@@ -266,8 +288,9 @@ export async function POST(request: Request) {
     const responseData: GeneratedRouteData = {
       routeId: insertedRoute.id as string,
       scale,
-      translation: buildTranslation(data.routes),
-      options: data.routes as unknown as GeneratedRouteData["options"],
+      timeScale,
+      translation,
+      options: data.plans,
       unlockedOptionIds: [],
     };
 
@@ -282,14 +305,13 @@ export async function POST(request: Request) {
   }
 }
 
-function parseGeneratedRoutes(
+function parseGeneratedPlans(
   content: string,
-  scale: SupportedScale,
-): GeneratedRoutesResponse | null {
+  timeScale: TimeScale,
+): GeneratedPlansResponse | null {
   try {
     const parsed = JSON.parse(content) as unknown;
-
-    const normalized = normalizeGeneratedRoutes(parsed, scale);
+    const normalized = normalizeGeneratedPlans(parsed, timeScale);
 
     if (!normalized) {
       return null;
@@ -301,106 +323,184 @@ function parseGeneratedRoutes(
   }
 }
 
-function normalizeGeneratedRoutes(
+function normalizeGeneratedPlans(
   value: unknown,
-  scale: SupportedScale,
-): GeneratedRoutesResponse | null {
+  timeScale: TimeScale,
+): GeneratedPlansResponse | null {
   if (!isRecord(value)) {
     return null;
   }
 
-  const rawRoutes = Array.isArray(value.routes)
-    ? value.routes
-    : Array.isArray(value.options)
-      ? value.options
-      : [];
-
-  const normalizedRoutes = rawRoutes
-    .map((route, index) =>
-      normalizeModuleRoute(
-        route,
-        index === 0 ? "comfort" : "shift",
-        scale,
-      ),
+  const rawPlans = Array.isArray(value.plans)
+    ? value.plans
+    : Array.isArray(value.routes)
+      ? value.routes
+      : Array.isArray(value.options)
+        ? value.options
+        : [value];
+  const kind = getPlanKind(timeScale);
+  const plans = rawPlans
+    .map((plan, index) =>
+      normalizePlan(plan, kind, index === 0 ? "comfort" : "shift", timeScale),
     )
-    .filter((route): route is ModuleRoute => route !== null);
+    .filter((plan): plan is GeneratedPlan => plan !== null)
+    .slice(0, 2);
 
-  const comfortRoute =
-    normalizedRoutes.find((route) => route.type === "comfort") ??
-    normalizeModuleRoute(null, "comfort", scale);
-  const shiftRoute =
-    normalizedRoutes.find((route) => route.type === "shift") ??
-    normalizeModuleRoute(null, "shift", scale);
+  if (plans.length > 0) {
+    return { plans };
+  }
 
-  if (!comfortRoute || !shiftRoute) {
+  const fallbackPlan = createFallbackPlan(kind, timeScale);
+
+  return fallbackPlan ? { plans: [fallbackPlan] } : null;
+}
+
+function normalizePlan(
+  value: unknown,
+  kind: PlanKind,
+  fallbackType: PlanType,
+  timeScale: TimeScale,
+): GeneratedPlan | null {
+  if (kind === "weekend") {
+    return normalizeWeekendPlan(value, fallbackType);
+  }
+
+  if (kind === "longer") {
+    return normalizeLongerPlan(value, fallbackType);
+  }
+
+  return normalizeLinearPlan(value, fallbackType, timeScale);
+}
+
+function normalizeLinearPlan(
+  value: unknown,
+  fallbackType: PlanType,
+  timeScale: TimeScale,
+): LinearPlan | null {
+  const record = isRecord(value) ? value : {};
+  const type = normalizePlanType(record.type, fallbackType);
+  const rawModules = Array.isArray(record.modules) ? record.modules : [];
+  const fallbackModuleIds = getFallbackModuleIds("linear", type);
+  const modules = normalizeModuleList(rawModules, fallbackModuleIds, 4);
+
+  if (modules.length === 0) {
     return null;
   }
 
   return {
-    routes: [comfortRoute, shiftRoute],
+    kind: "linear",
+    intro: normalizeIntro(record.intro, type),
+    type,
+    modules,
+    totalDuration: sumModuleDurations(modules),
+    timeScale: timeScale === "1hour" ? "1hour" : "tonight",
   };
 }
 
-function normalizeModuleRoute(
+function normalizeWeekendPlan(
   value: unknown,
-  fallbackType: ModuleRoute["type"],
-  scale: SupportedScale,
-): ModuleRoute | null {
-  const route = isRecord(value) ? value : {};
-  const routeType =
-    route.type === "comfort" || route.type === "shift"
-      ? route.type
-      : fallbackType;
-  const rawModules = Array.isArray(route.modules) ? route.modules : [];
-  const fallbackModuleIds = getFallbackModuleIds(scale, routeType);
-  const normalizedModules = rawModules
+  fallbackType: PlanType,
+): WeekendPlan | null {
+  const record = isRecord(value) ? value : {};
+  const type = normalizePlanType(record.type, fallbackType);
+  const saturdayModules = normalizeModuleList(
+    Array.isArray(record.saturdayModules) ? record.saturdayModules : [],
+    getFallbackModuleIds("saturday", type),
+    5,
+  );
+  const sundayModules = normalizeModuleList(
+    Array.isArray(record.sundayModules) ? record.sundayModules : [],
+    getFallbackModuleIds("sunday", type),
+    5,
+  );
+
+  if (saturdayModules.length === 0 || sundayModules.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "weekend",
+    intro: normalizeIntro(record.intro, type),
+    type,
+    saturdayModules,
+    sundayModules,
+    totalDuration:
+      sumModuleDurations(saturdayModules) + sumModuleDurations(sundayModules),
+    timeScale: "weekend",
+  };
+}
+
+function normalizeLongerPlan(
+  value: unknown,
+  fallbackType: PlanType,
+): LongerPlan | null {
+  const record = isRecord(value) ? value : {};
+  const rawAnchors = Array.isArray(record.anchors) ? record.anchors : [];
+  const anchors = rawAnchors
+    .map(normalizeAnchor)
+    .filter((anchor): anchor is Anchor => anchor !== null)
+    .slice(0, 5);
+
+  if (anchors.length < 3) {
+    for (const fallbackAnchor of createFallbackAnchors()) {
+      if (anchors.length >= 3) {
+        break;
+      }
+
+      if (!anchors.some((anchor) => anchor.moduleId === fallbackAnchor.moduleId)) {
+        anchors.push(fallbackAnchor);
+      }
+    }
+  }
+
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "longer",
+    theme:
+      typeof record.theme === "string" && record.theme.trim()
+        ? record.theme.trim().slice(0, 24)
+        : "恢复精力周",
+    type: normalizePlanType(record.type, fallbackType),
+    anchors,
+    timeScale: "longer",
+  };
+}
+
+function normalizeModuleList(
+  rawModules: unknown[],
+  fallbackModuleIds: string[],
+  maxCount: number,
+) {
+  const modules = rawModules
     .map(normalizeSelectedModule)
-    .filter((module): module is ModuleRoute["modules"][number] => module !== null);
-  const usedModuleIds = new Set(normalizedModules.map((module) => module.moduleId));
+    .filter((module): module is SelectedModule => module !== null);
+  const usedModuleIds = new Set(modules.map((module) => module.moduleId));
 
   for (const moduleId of fallbackModuleIds) {
-    if (normalizedModules.length >= 3) {
+    if (modules.length >= Math.min(3, maxCount)) {
       break;
     }
 
     if (!usedModuleIds.has(moduleId)) {
-      normalizedModules.push({ moduleId });
+      modules.push({ moduleId });
       usedModuleIds.add(moduleId);
     }
   }
 
-  if (normalizedModules.length === 0) {
-    return null;
-  }
-
-  const modules = normalizedModules.slice(0, 5);
-  const rawTransitions = Array.isArray(route.transitions) ? route.transitions : [];
-  const transitions = normalizeTransitions(rawTransitions, modules);
-  const totalDuration = modules.reduce((total, selectedModule) => {
-    const moduleDefinition = moduleById.get(selectedModule.moduleId);
-
-    return total + (moduleDefinition?.duration ?? 0);
-  }, 0);
-
-  return {
-    intro: normalizeIntro(route.intro, routeType),
-    modules,
-    transitions,
-    totalDuration,
-    type: routeType,
-  };
+  return modules.slice(0, maxCount);
 }
 
-function normalizeSelectedModule(
-  value: unknown,
-): ModuleRoute["modules"][number] | null {
+function normalizeSelectedModule(value: unknown): SelectedModule | null {
+  if (typeof value === "string") {
+    const moduleId = resolveModuleId(value);
+
+    return moduleId ? { moduleId } : null;
+  }
+
   if (!isRecord(value)) {
-    if (typeof value === "string") {
-      const moduleId = resolveModuleId(value);
-
-      return moduleId ? { moduleId } : null;
-    }
-
     return null;
   }
 
@@ -426,6 +526,26 @@ function normalizeSelectedModule(
   };
 }
 
+function normalizeAnchor(value: unknown): Anchor | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const selectedModule = normalizeSelectedModule(value);
+
+  if (!selectedModule) {
+    return null;
+  }
+
+  return {
+    ...selectedModule,
+    day:
+      typeof value.day === "number" && Number.isFinite(value.day)
+        ? Math.max(1, Math.round(value.day))
+        : 1,
+  };
+}
+
 function resolveModuleId(value: string) {
   const normalizedValue = value.trim();
 
@@ -448,46 +568,60 @@ function resolveModuleId(value: string) {
   return fuzzyModule?.id ?? null;
 }
 
-function normalizeTransitions(
-  rawTransitions: unknown[],
-  modules: ModuleRoute["modules"],
-) {
-  const transitions = rawTransitions
-    .filter((transition): transition is string => typeof transition === "string")
-    .map((transition) => transition.trim())
-    .filter(Boolean)
-    .slice(0, Math.max(0, modules.length - 1));
+function sumModuleDurations(modules: SelectedModule[]) {
+  return modules.reduce((total, selectedModule) => {
+    const moduleDefinition = moduleById.get(selectedModule.moduleId);
 
-  while (transitions.length < modules.length - 1) {
-    const nextModule = moduleById.get(modules[transitions.length + 1].moduleId);
-    transitions.push(`然后转到${nextModule?.name ?? "下一件事"}`);
-  }
-
-  return transitions;
+    return total + (moduleDefinition?.duration ?? 0);
+  }, 0);
 }
 
-function normalizeIntro(value: unknown, type: ModuleRoute["type"]) {
+function normalizeIntro(value: unknown, type: PlanType) {
   if (typeof value === "string" && value.trim()) {
     return value.trim().slice(0, 18);
   }
 
-  return type === "comfort" ? "先从简单处开始" : "轻轻换一个方向";
+  return type === "comfort" ? "先慢下来" : "换个方向";
 }
 
-function getFallbackModuleIds(
-  scale: SupportedScale,
-  type: ModuleRoute["type"],
-) {
-  if (scale === "meal") {
-    return type === "comfort"
-      ? ["mod_warm_milk", "mod_simple_noodle", "mod_tea_and_snack"]
-      : ["mod_grocery_walk", "mod_one_pan_dinner", "mod_desk_clear"];
+function normalizePlanType(value: unknown, fallbackType: PlanType): PlanType {
+  return value === "comfort" || value === "shift" ? value : fallbackType;
+}
+
+function createFallbackPlan(
+  kind: PlanKind,
+  timeScale: TimeScale,
+): GeneratedPlan | null {
+  if (kind === "weekend") {
+    return normalizeWeekendPlan({}, "comfort");
   }
 
-  if (scale === "weekend") {
+  if (kind === "longer") {
+    return normalizeLongerPlan({}, "comfort");
+  }
+
+  return normalizeLinearPlan({}, "comfort", timeScale);
+}
+
+function createFallbackAnchors(): Anchor[] {
+  return [
+    { day: 1, moduleId: "mod_slow_cooking", customContext: "先做一顿慢一点的饭" },
+    { day: 3, moduleId: "mod_one_block_walk", customContext: "出门绕一个短圈" },
+    { day: 6, moduleId: "mod_three_line_journal", customContext: "写下这周三个变化" },
+  ].filter((anchor) => moduleIdSet.has(anchor.moduleId));
+}
+
+function getFallbackModuleIds(kind: "linear" | "saturday" | "sunday", type: PlanType) {
+  if (kind === "saturday") {
     return type === "comfort"
-      ? ["mod_bed_reset", "mod_park_loop", "mod_three_line_journal"]
-      : ["mod_grocery_errand", "mod_light_one_corner", "mod_tomorrow_note"];
+      ? ["mod_grocery_walk", "mod_park_loop", "mod_tea_and_snack"]
+      : ["mod_one_block_walk", "mod_market_salad", "mod_light_one_corner"];
+  }
+
+  if (kind === "sunday") {
+    return type === "comfort"
+      ? ["mod_hot_bath", "mod_bed_reset", "mod_three_line_journal"]
+      : ["mod_desk_clear", "mod_simple_noodle", "mod_tomorrow_note"];
   }
 
   return type === "comfort"
@@ -495,14 +629,43 @@ function getFallbackModuleIds(
     : ["mod_one_block_walk", "mod_tea_station", "mod_sleep_boundary"];
 }
 
-function buildTranslation(routes: [ModuleRoute, ModuleRoute]) {
-  const comfortRoute = routes.find((route) => route.type === "comfort");
+function getPlanKind(timeScale: TimeScale): PlanKind {
+  if (timeScale === "weekend") {
+    return "weekend";
+  }
 
-  return comfortRoute?.intro ?? routes[0].intro;
+  if (timeScale === "longer") {
+    return "longer";
+  }
+
+  return "linear";
+}
+
+function buildTranslation(plans: GeneratedPlan[], timeScale: TimeScale) {
+  const firstPlan = plans[0];
+
+  if (!firstPlan) {
+    return timeScale === "longer" ? "一个生活主题" : "今晚先开始";
+  }
+
+  return firstPlan.kind === "longer" ? firstPlan.theme : firstPlan.intro;
 }
 
 function normalizeScale(value: unknown): SupportedScale {
   if (value === "weekend" || value === "meal") {
+    return value;
+  }
+
+  return "tonight";
+}
+
+function normalizeTimeScale(value: unknown): TimeScale {
+  if (
+    value === "1hour" ||
+    value === "tonight" ||
+    value === "weekend" ||
+    value === "longer"
+  ) {
     return value;
   }
 
@@ -518,16 +681,9 @@ function isMissingScaleColumnError(error: unknown) {
     return false;
   }
 
-  const message =
-    typeof error.message === "string" ? error.message.toLowerCase() : "";
-  const details =
-    typeof error.details === "string" ? error.details.toLowerCase() : "";
-
   return (
-    (message.includes("scale") || details.includes("scale")) &&
-    (message.includes("column") ||
-      details.includes("column") ||
-      message.includes("schema cache") ||
-      details.includes("schema cache"))
+    error.code === "PGRST204" ||
+    (typeof error.message === "string" &&
+      error.message.toLowerCase().includes("scale"))
   );
 }

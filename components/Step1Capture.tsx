@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import type { RouteScale, StepConstraints } from "@/lib/routeTypes";
+import type { RouteScale, StepConstraints, TimeScale } from "@/lib/routeTypes";
 
-type StepTime = "1小时" | "今晚" | "周末";
+type StepTime = "1小时" | "今晚" | "周末" | "更长（7天+）";
 type StepBudget = "0" | "20" | "100+";
 type StepSocial = "Alone" | "Someone" | "Open";
 
@@ -20,6 +20,7 @@ type Step1CaptureProps = {
     input: string,
     constraints: Step1Constraints,
     scale: EntryScale,
+    timeScale: TimeScale,
   ) => void;
 };
 
@@ -38,7 +39,12 @@ const placeholders: Record<EntryScale, string> = {
   meal: "比如：想吃点认真做的东西。",
 };
 
-const timeOptions: StepTime[] = ["1小时", "今晚", "周末"];
+const timeOptions: Array<{ label: StepTime; value: TimeScale }> = [
+  { label: "1小时", value: "1hour" },
+  { label: "今晚", value: "tonight" },
+  { label: "周末", value: "weekend" },
+  { label: "更长（7天+）", value: "longer" },
+];
 const budgetOptions: StepBudget[] = ["0", "20", "100+"];
 const socialOptions: StepSocial[] = ["Alone", "Someone", "Open"];
 const extraScaleOptions: Array<{ label: string; value: EntryScale }> = [
@@ -51,6 +57,7 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [showScales, setShowScales] = useState(false);
   const [scale, setScale] = useState<EntryScale>("tonight");
+  const [timeScale, setTimeScale] = useState<TimeScale>("tonight");
   const [constraints, setConstraints] = useState<Step1Constraints>({
     time: "今晚",
     budget: "0",
@@ -112,13 +119,17 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
 
         {showSettings ? (
           <div className="mt-5 space-y-5">
-            <OptionGroup
+            <TimeScaleGroup
               label="时间"
               options={timeOptions}
-              value={constraints.time}
-              onChange={(time) =>
-                setConstraints((current) => ({ ...current, time }))
-              }
+              value={timeScale}
+              onChange={(option) => {
+                setTimeScale(option.value);
+                setConstraints((current) => ({
+                  ...current,
+                  time: option.label,
+                }));
+              }}
             />
             <OptionGroup
               label="预算"
@@ -163,13 +174,47 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
         <button
           type="button"
           disabled={!canSubmit}
-          onClick={() => onSubmit(input.trim(), constraints, scale)}
+          onClick={() => onSubmit(input.trim(), constraints, scale, timeScale)}
           className="mt-7 w-full rounded-lg bg-[#2e4d48] px-5 py-4 text-base font-medium text-white transition hover:bg-[#243f3b] disabled:cursor-not-allowed disabled:bg-[#cfc7bd]"
         >
           看看怎么过
         </button>
       </div>
     </section>
+  );
+}
+
+function TimeScaleGroup({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: Array<{ label: StepTime; value: TimeScale }>;
+  value: TimeScale;
+  onChange: (option: { label: StepTime; value: TimeScale }) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-2 text-sm text-[#7d746b]">{label}</p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option)}
+            className={`rounded-lg border px-4 py-2 text-sm transition ${
+              value === option.value
+                ? "border-[#2e4d48] bg-[#e2eee9] text-[#203b37]"
+                : "border-[#eadfd4] bg-white text-[#6f665d] hover:bg-[#fbfaf7]"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

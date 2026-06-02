@@ -9,12 +9,14 @@ import type {
   StepConstraints,
   StoredRouteData,
   TimelineStep,
+  TimeScale,
 } from "@/lib/routeTypes";
 
 type Step1State = {
   input: string;
   constraints: StepConstraints;
   scale: RouteScale;
+  timeScale: TimeScale;
 };
 
 type VerifyPaymentResponse =
@@ -89,6 +91,7 @@ function Step2PageContent() {
                 input: verified.route.userInput,
                 constraints: verified.route.constraints,
                 scale: verified.route.scale,
+                timeScale: inferTimeScale(verified.route.constraints.time),
               });
               setInitialRouteData(verified.route);
               setPaidOptionId(verified.paidOptionId);
@@ -110,6 +113,7 @@ function Step2PageContent() {
                 input: route.userInput,
                 constraints: route.constraints,
                 scale: route.scale,
+                timeScale: inferTimeScale(route.constraints.time),
               });
               setInitialRouteData(route);
               setPaidOptionId(route.unlockedOptionIds[0] ?? null);
@@ -123,6 +127,9 @@ function Step2PageContent() {
           const storedScale = normalizeRouteScale(
             sessionStorage.getItem("step1_scale"),
           );
+          const storedTimeScale = normalizeTimeScale(
+            sessionStorage.getItem("step1_timeScale"),
+          );
 
           if (!input || !storedConstraints) {
             router.replace("/");
@@ -133,6 +140,7 @@ function Step2PageContent() {
             input,
             constraints: JSON.parse(storedConstraints) as StepConstraints,
             scale: storedScale,
+            timeScale: storedTimeScale,
           });
           setInitialRouteData(null);
           setPaidOptionId(null);
@@ -188,6 +196,7 @@ function Step2PageContent() {
       userInput={step1State.input}
       constraints={step1State.constraints}
       scale={step1State.scale}
+      timeScale={step1State.timeScale}
       initialRouteData={initialRouteData}
       paidOptionId={paidOptionId}
       unlockedTimeline={unlockedTimeline}
@@ -228,6 +237,7 @@ function persistRouteLocally(route: StoredRouteData) {
   sessionStorage.setItem("step1_input", route.userInput);
   sessionStorage.setItem("step1_constraints", JSON.stringify(route.constraints));
   sessionStorage.setItem("step1_scale", route.scale);
+  sessionStorage.setItem("step1_timeScale", inferTimeScale(route.constraints.time));
   sessionStorage.setItem("step1_route_id", route.routeId);
 }
 
@@ -258,6 +268,35 @@ function normalizeRouteScale(value: string | null): RouteScale {
     value === "corner"
   ) {
     return value;
+  }
+
+  return "tonight";
+}
+
+function normalizeTimeScale(value: string | null): TimeScale {
+  if (
+    value === "1hour" ||
+    value === "tonight" ||
+    value === "weekend" ||
+    value === "longer"
+  ) {
+    return value;
+  }
+
+  return "tonight";
+}
+
+function inferTimeScale(time: string | null | undefined): TimeScale {
+  if (time === "1小时") {
+    return "1hour";
+  }
+
+  if (time === "周末") {
+    return "weekend";
+  }
+
+  if (time === "更长（7天+）") {
+    return "longer";
   }
 
   return "tonight";

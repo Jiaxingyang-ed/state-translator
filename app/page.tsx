@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import Step1Capture from "@/components/Step1Capture";
-import type { RouteScale } from "@/lib/routeTypes";
+import type { RouteScale, TimeScale } from "@/lib/routeTypes";
 
 type StepConstraints = {
   time: string;
@@ -17,10 +17,12 @@ export default function Home() {
     input: string,
     constraints: StepConstraints,
     scale: RouteScale,
+    timeScale: TimeScale,
   ) => {
     sessionStorage.setItem("step1_input", input);
     sessionStorage.setItem("step1_constraints", JSON.stringify(constraints));
     sessionStorage.setItem("step1_scale", scale);
+    sessionStorage.setItem("step1_timeScale", timeScale);
     sessionStorage.setItem("step1_social", constraints.social);
     sessionStorage.removeItem("step1_route_id");
     router.push("/step2");
