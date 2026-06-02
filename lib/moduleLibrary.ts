@@ -7,7 +7,10 @@ export type LifeModule = {
   category: ModuleCategory;
   duration: number;
   energyLevel: ModuleEnergyLevel;
+  starter?: string;
+  sensoryHooks?: string[];
   instructions: string[];
+  tips?: string[];
 };
 
 export const moduleLibrary: LifeModule[] = [
