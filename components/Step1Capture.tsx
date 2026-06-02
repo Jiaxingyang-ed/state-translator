@@ -52,6 +52,43 @@ const extraScaleOptions: Array<{ label: string; value: EntryScale }> = [
   { label: "Meal", value: "meal" },
 ];
 
+function getGreeting() {
+  const hour = new Date().getHours();
+
+  if (hour >= 6 && hour < 11) {
+    return {
+      icon: "🌅",
+      text: "早上好，今天打算怎么开始？",
+    };
+  }
+
+  if (hour >= 11 && hour < 14) {
+    return {
+      icon: "☀️",
+      text: "午间休息，要不要做点简单的？",
+    };
+  }
+
+  if (hour >= 14 && hour < 18) {
+    return {
+      icon: "🌤️",
+      text: "午后时光，适合做点放松的事",
+    };
+  }
+
+  if (hour >= 18 && hour < 22) {
+    return {
+      icon: "🌆",
+      text: "傍晚了，今晚想怎么过？",
+    };
+  }
+
+  return {
+    icon: "🌙",
+    text: "夜深了，来点安静的事吧",
+  };
+}
+
 export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
   const [input, setInput] = useState("");
   const [showSettings, setShowSettings] = useState(false);
@@ -65,6 +102,7 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
   });
 
   const canSubmit = input.trim().length > 0;
+  const greeting = getGreeting();
 
   return (
     <section className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center px-5 py-12 sm:px-8">
@@ -76,6 +114,13 @@ export default function Step1Capture({ onSubmit }: Step1CaptureProps) {
       </div>
 
       <div className="rounded-lg border border-[#eadfd4] bg-white p-5 shadow-sm sm:p-7">
+        <div className="mb-4 flex min-h-11 items-center gap-3 rounded-lg bg-[#fbfaf7] px-4 py-3 text-[#655b52]">
+          <span className="text-xl" aria-hidden="true">
+            {greeting.icon}
+          </span>
+          <p className="text-base leading-6">{greeting.text}</p>
+        </div>
+
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
